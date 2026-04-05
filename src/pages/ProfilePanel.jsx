@@ -22,10 +22,10 @@ function ProfilePanel({ currentUser, onLogout }) {
       </div>
 
       <button className="primary-button" type="button" onClick={onLogout}>
-        Выйти
+          Выйти
       </button>
     </section>
+
   )
 }
-
 export default ProfilePanel

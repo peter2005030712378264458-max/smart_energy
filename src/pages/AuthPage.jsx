@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
-import { login, register } from './authApi.js'
-import { apiRequest, refreshAccessToken } from './authClient.js'
+import { login, register } from '../features/auth/api/authApi.js'
+import { apiRequest, refreshAccessToken } from '../features/auth/api/authClient.js'
 import LoginForm from './LoginForm.jsx'
 import ProfilePanel from './ProfilePanel.jsx'
 import RegisterForm from './RegisterForm.jsx'
-import { clearAccessToken, setAccessToken } from './tokenStore.js'
-import './auth.css'
+import { clearAccessToken, setAccessToken } from '../features/auth/model/authStore.js'
+import { logout } from '../features/auth/api/authApi.js'
+import '../auth.css'
 
 const initialLogin = {
   email: '',
@@ -45,6 +46,17 @@ function AuthPage() {
   const [status, setStatus] = useState('Проверяем сохраненную сессию...')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(true)
+
+  async function handleLogout() {
+    try {
+      await logout()
+    } catch (e) {
+      console.error('Ошибка logout', e)
+    } finally {
+      clearAccessToken()
+      setCurrentUser(null)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -184,13 +196,6 @@ function AuthPage() {
     } finally {
       setBusy(false)
     }
-  }
-
-  function handleLogout() {
-    clearAccessToken()
-    setCurrentUser(null)
-    setStatus('Вы вышли из системы')
-    setError('')
   }
 
   function switchMode(nextMode) {

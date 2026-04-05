@@ -1,5 +1,5 @@
 import { API_BASE, refresh } from './authApi.js'
-import { clearAccessToken, getAccessToken, setAccessToken } from './tokenStore.js'
+import { clearAccessToken, getAccessToken, setAccessToken } from '../model/authStore.js'
 
 let refreshPromise = null
 

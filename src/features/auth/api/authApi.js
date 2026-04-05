@@ -28,3 +28,10 @@ export async function refresh() {
     credentials: 'include',
   })
 }
+
+export async function logout() {
+  return fetch(`${API_BASE}/logout/`, {
+    method: 'POST',
+    credentials: 'include', 
+  })
+}

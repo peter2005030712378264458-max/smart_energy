@@ -1,4 +1,4 @@
-import AuthPage from './features/auth/AuthPage.jsx'
+import AuthPage from '../pages/AuthPage.jsx'
 
 function App() {
   return <AuthPage />
