@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { login, register } from '../features/auth/api/authApi.js'
 import { apiRequest, refreshAccessToken } from '../features/auth/api/authClient.js'
+import DashboardPage from './DashboardPage.jsx'
 import LoginForm from './LoginForm.jsx'
-import ProfilePanel from './ProfilePanel.jsx'
 import RegisterForm from './RegisterForm.jsx'
 import { clearAccessToken, setAccessToken } from '../features/auth/model/authStore.js'
 import { logout } from '../features/auth/api/authApi.js'
@@ -36,6 +36,8 @@ function getRegisterErrorMessage(response, data) {
 }
 
 function AuthPage() {
+  const showDashboardPreview =
+    new URLSearchParams(window.location.search).get('dashboard') === '1'
   const [mode, setMode] = useState('login')
   const [loginForm, setLoginForm] = useState(initialLogin)
   const [registerForm, setRegisterForm] = useState(initialRegister)
@@ -206,82 +208,97 @@ function AuthPage() {
 
   const isAuthenticated = currentUser !== null
 
+  if (showDashboardPreview) {
+    return (
+      <DashboardPage
+        currentUser={{
+          first_name: 'Demo',
+          last_name: 'User',
+          email: 'demo@example.com',
+        }}
+        onLogout={() => {
+          window.location.search = ''
+        }}
+      />
+    )
+  }
+
+  if (isAuthenticated) {
+    return <DashboardPage currentUser={currentUser} onLogout={handleLogout} />
+  }
+
   return (
     <main className="auth-shell">
       <div className="auth-background auth-background-left" aria-hidden="true" />
       <div className="auth-background auth-background-right" aria-hidden="true" />
 
       <section className="auth-card">
-        {!isAuthenticated ? (
-          <>
-            <header className="auth-header">
-              <h1>{mode === 'login' ? 'Вход в систему' : 'Регистрация'}</h1>
-              <p>
-                {mode === 'login'
-                  ? 'Введите свои данные для входа'
-                  : 'Создайте новый аккаунт'}
-              </p>
-            </header>
+        <>
+          <header className="auth-header">
+            <h1>{mode === 'login' ? 'Вход в систему' : 'Регистрация'}</h1>
+            <p>
+              {mode === 'login'
+                ? 'Введите свои данные для входа'
+                : 'Создайте новый аккаунт'}
+            </p>
+          </header>
 
-            {mode === 'login' ? (
-              <LoginForm
-                busy={busy}
-                email={loginForm.email}
-                password={loginForm.password}
-                remember={loginForm.remember}
-                passwordVisible={loginPasswordVisible}
-                onEmailChange={(event) => updateLoginField('email', event.target.value)}
-                onPasswordChange={(event) => updateLoginField('password', event.target.value)}
-                onRememberChange={(event) =>
-                  updateLoginField('remember', event.target.checked)
-                }
-                onTogglePassword={() =>
-                  setLoginPasswordVisible((current) => !current)
-                }
-                onSubmit={handleLogin}
-                onSwitchMode={() => switchMode('register')}
-              />
-            ) : (
-              <RegisterForm
-                busy={busy}
-                firstName={registerForm.firstName}
-                lastName={registerForm.lastName}
-                email={registerForm.email}
-                password={registerForm.password}
-                confirmPassword={registerForm.confirmPassword}
-                acceptTerms={registerForm.acceptTerms}
-                passwordVisible={registerPasswordVisible}
-                confirmVisible={registerConfirmVisible}
-                onFirstNameChange={(event) =>
-                  updateRegisterField('firstName', event.target.value)
-                }
-                onLastNameChange={(event) =>
-                  updateRegisterField('lastName', event.target.value)
-                }
-                onEmailChange={(event) => updateRegisterField('email', event.target.value)}
-                onPasswordChange={(event) =>
-                  updateRegisterField('password', event.target.value)
-                }
-                onConfirmPasswordChange={(event) =>
-                  updateRegisterField('confirmPassword', event.target.value)
-                }
-                onAcceptTermsChange={(event) =>
-                  updateRegisterField('acceptTerms', event.target.checked)
-                }
-                onTogglePassword={() =>
-                  setRegisterPasswordVisible((current) => !current)
-                }
-                onToggleConfirmPassword={() =>
-                  setRegisterConfirmVisible((current) => !current)
-                }
-                onSubmit={handleRegister}
-                onSwitchMode={() => switchMode('login')}
-              />
-            )}
-          </>
-        ) : (
-          <ProfilePanel currentUser={currentUser} onLogout={handleLogout} />
-        )}
+          {mode === 'login' ? (
+            <LoginForm
+              busy={busy}
+              email={loginForm.email}
+              password={loginForm.password}
+              remember={loginForm.remember}
+              passwordVisible={loginPasswordVisible}
+              onEmailChange={(event) => updateLoginField('email', event.target.value)}
+              onPasswordChange={(event) => updateLoginField('password', event.target.value)}
+              onRememberChange={(event) =>
+                updateLoginField('remember', event.target.checked)
+              }
+              onTogglePassword={() =>
+                setLoginPasswordVisible((current) => !current)
+              }
+              onSubmit={handleLogin}
+              onSwitchMode={() => switchMode('register')}
+            />
+          ) : (
+            <RegisterForm
+              busy={busy}
+              firstName={registerForm.firstName}
+              lastName={registerForm.lastName}
+              email={registerForm.email}
+              password={registerForm.password}
+              confirmPassword={registerForm.confirmPassword}
+              acceptTerms={registerForm.acceptTerms}
+              passwordVisible={registerPasswordVisible}
+              confirmVisible={registerConfirmVisible}
+              onFirstNameChange={(event) =>
+                updateRegisterField('firstName', event.target.value)
+              }
+              onLastNameChange={(event) =>
+                updateRegisterField('lastName', event.target.value)
+              }
+              onEmailChange={(event) => updateRegisterField('email', event.target.value)}
+              onPasswordChange={(event) =>
+                updateRegisterField('password', event.target.value)
+              }
+              onConfirmPasswordChange={(event) =>
+                updateRegisterField('confirmPassword', event.target.value)
+              }
+              onAcceptTermsChange={(event) =>
+                updateRegisterField('acceptTerms', event.target.checked)
+              }
+              onTogglePassword={() =>
+                setRegisterPasswordVisible((current) => !current)
+              }
+              onToggleConfirmPassword={() =>
+                setRegisterConfirmVisible((current) => !current)
+              }
+              onSubmit={handleRegister}
+              onSwitchMode={() => switchMode('login')}
+            />
+          )}
+        </>
 
         <footer className="auth-footer">
           <p>{status}</p>
