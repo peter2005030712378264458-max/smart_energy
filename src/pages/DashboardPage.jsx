@@ -20,6 +20,9 @@ const PERIOD_OPTIONS = [
   { value: '7d', label: '7 дней', hours: 24 * 7 },
 ]
 
+const DAY_MS = 24 * 60 * 60 * 1000
+const CHART_PADDING = { top: 18, right: 22, bottom: 54, left: 56 }
+
 function formatNumber(value, digits = 1) {
   const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0
 
@@ -27,6 +30,10 @@ function formatNumber(value, digits = 1) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   }).format(safeValue)
+}
+
+function formatPercent(value, digits = 0) {
+  return `${formatNumber(value, digits)}%`
 }
 
 function formatDateTime(value) {
@@ -100,7 +107,9 @@ function getPeriodParams(period, dateRange, selectedDate) {
     return {}
   }
 
-  const dateKey = selectedDate || dateRange.date_to.slice(0, 10)
+  const availableDates = buildAvailableDates(dateRange)
+  const fallbackDate = availableDates.at(-1) ?? dateRange.date_to.slice(0, 10)
+  const dateKey = availableDates.includes(selectedDate) ? selectedDate : fallbackDate
   const selectedDayStart = new Date(`${dateKey}T00:00:00Z`)
 
   if (period === '24h') {
@@ -111,10 +120,12 @@ function getPeriodParams(period, dateRange, selectedDate) {
   }
 
   const days = Math.max(1, Math.round(periodOption.hours / 24))
-  const dateFrom = new Date(selectedDayStart.getTime() - (days - 1) * 24 * 60 * 60 * 1000)
+  const dateFrom = new Date(selectedDayStart.getTime() - (days - 1) * DAY_MS)
+  const minDate = new Date(`${dateRange.date_from.slice(0, 10)}T00:00:00Z`)
+  const clampedDateFrom = dateFrom < minDate ? minDate : dateFrom
 
   return {
-    from: `${toUtcDateKey(dateFrom)}T00:00:00Z`,
+    from: `${toUtcDateKey(clampedDateFrom)}T00:00:00Z`,
     to: `${dateKey}T23:59:59Z`,
   }
 }
@@ -130,6 +141,47 @@ function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumer
 
 function normalizeChartValue(point) {
   return Number(point.value ?? 0) / 1000
+}
+
+function buildPowerStats(points, summary) {
+  const series = points
+    .map((point) => ({
+      timestamp: point.timestamp,
+      kw: normalizeChartValue(point),
+    }))
+    .filter((point) => Number.isFinite(point.kw))
+
+  if (series.length === 0) {
+    const fallbackMax = Number(summary?.max_power_kw ?? 0)
+    const fallbackAvg = Number(summary?.avg_power_kw ?? 0)
+
+    return {
+      currentKw: Number(summary?.current_power_kw ?? 0),
+      maxKw: fallbackMax,
+      avgKw: fallbackAvg,
+      minKw: 0,
+      loadFactor: fallbackMax > 0 ? (fallbackAvg / fallbackMax) * 100 : 0,
+      pointsCount: 0,
+      lastTimestamp: summary?.date_to ?? null,
+      peakTimestamp: summary?.date_to ?? null,
+    }
+  }
+
+  const current = series.at(-1)
+  const peak = series.reduce((best, point) => (point.kw > best.kw ? point : best), series[0])
+  const min = series.reduce((best, point) => (point.kw < best.kw ? point : best), series[0])
+  const avgKw = series.reduce((sum, point) => sum + point.kw, 0) / series.length
+
+  return {
+    currentKw: current.kw,
+    maxKw: peak.kw,
+    avgKw,
+    minKw: min.kw,
+    loadFactor: peak.kw > 0 ? (avgKw / peak.kw) * 100 : 0,
+    pointsCount: series.length,
+    lastTimestamp: current.timestamp,
+    peakTimestamp: peak.timestamp,
+  }
 }
 
 function buildChartSeries(points) {
@@ -148,8 +200,13 @@ function buildChartSeries(points) {
         day: '2-digit',
         month: '2-digit',
         hour: '2-digit',
+        minute: '2-digit',
       }).format(new Date(point.timestamp))
     ),
+    points: sampled.map((point, index) => ({
+      timestamp: point.timestamp,
+      value: actual[index],
+    })),
     actual,
     baseline: actual.map(() => average),
     deviations: actual.reduce((indexes, value, index) => {
@@ -161,21 +218,79 @@ function buildChartSeries(points) {
   }
 }
 
-function drawLineChart(canvas, series) {
+function getChartLayout(canvas, series) {
   if (!canvas) {
-    return
+    return null
   }
 
   const parent = canvas.parentElement
 
   if (!parent) {
-    return
+    return null
   }
 
   const width = parent.clientWidth
   const height = parent.clientHeight
-  const ratio = window.devicePixelRatio || 1
   const values = [...series.actual, ...series.baseline].filter((value) => Number.isFinite(value))
+  const chartWidth = width - CHART_PADDING.left - CHART_PADDING.right
+  const chartHeight = height - CHART_PADDING.top - CHART_PADDING.bottom
+  const minValue = values.length > 0 ? Math.max(0, Math.floor(Math.min(...values) * 0.9)) : 0
+  const maxValue = values.length > 0 ? Math.max(1, Math.ceil(Math.max(...values) * 1.1)) : 1
+  const xStep = chartWidth / Math.max(series.actual.length - 1, 1)
+
+  const toX = (index) => CHART_PADDING.left + index * xStep
+  const toY = (value) =>
+    CHART_PADDING.top + ((maxValue - value) / (maxValue - minValue || 1)) * chartHeight
+
+  return {
+    width,
+    height,
+    values,
+    chartWidth,
+    chartHeight,
+    minValue,
+    maxValue,
+    xStep,
+    toX,
+    toY,
+  }
+}
+
+function getNearestChartPoint(canvas, series, event) {
+  const layout = getChartLayout(canvas, series)
+
+  if (!layout || series.points.length === 0) {
+    return null
+  }
+
+  const rect = canvas.getBoundingClientRect()
+  const pointerX = event.clientX - rect.left
+  const nearestIndex = Math.min(
+    series.points.length - 1,
+    Math.max(0, Math.round((pointerX - CHART_PADDING.left) / layout.xStep))
+  )
+  const value = series.actual[nearestIndex]
+  const pointX = layout.toX(nearestIndex)
+  const pointY = layout.toY(value)
+
+  return {
+    ...series.points[nearestIndex],
+    index: nearestIndex,
+    x: Math.min(layout.width - 86, Math.max(86, pointX)),
+    y: Math.max(76, pointY),
+    label: series.labels[nearestIndex],
+  }
+}
+
+function drawLineChart(canvas, series, hoverPoint = null) {
+  const layout = getChartLayout(canvas, series)
+
+  if (!layout) {
+    return
+  }
+
+  const { width, height, values, chartHeight, minValue, maxValue, toX, toY } = layout
+  const ratio = window.devicePixelRatio || 1
 
   canvas.width = width * ratio
   canvas.height = height * ratio
@@ -199,25 +314,14 @@ function drawLineChart(canvas, series) {
     return
   }
 
-  const padding = { top: 18, right: 22, bottom: 54, left: 56 }
-  const chartWidth = width - padding.left - padding.right
-  const chartHeight = height - padding.top - padding.bottom
-  const minValue = Math.max(0, Math.floor(Math.min(...values) * 0.9))
-  const maxValue = Math.max(1, Math.ceil(Math.max(...values) * 1.1))
-  const xStep = chartWidth / Math.max(series.actual.length - 1, 1)
-
-  const toX = (index) => padding.left + index * xStep
-  const toY = (value) =>
-    padding.top + ((maxValue - value) / (maxValue - minValue || 1)) * chartHeight
-
   context.strokeStyle = 'rgba(155, 184, 223, 0.10)'
   context.lineWidth = 1
 
   for (let index = 0; index <= 4; index += 1) {
-    const y = padding.top + (chartHeight / 4) * index
+    const y = CHART_PADDING.top + (chartHeight / 4) * index
     context.beginPath()
-    context.moveTo(padding.left, y)
-    context.lineTo(width - padding.right, y)
+    context.moveTo(CHART_PADDING.left, y)
+    context.lineTo(width - CHART_PADDING.right, y)
     context.stroke()
   }
 
@@ -227,8 +331,8 @@ function drawLineChart(canvas, series) {
 
   for (let index = 0; index <= 4; index += 1) {
     const value = maxValue - ((maxValue - minValue) / 4) * index
-    const y = padding.top + (chartHeight / 4) * index + 4
-    context.fillText(`${formatNumber(value, 0)} кВт`, padding.left - 10, y)
+    const y = CHART_PADDING.top + (chartHeight / 4) * index + 4
+    context.fillText(`${formatNumber(value, 0)} кВт`, CHART_PADDING.left - 10, y)
   }
 
   context.textAlign = 'center'
@@ -265,20 +369,6 @@ function drawLineChart(canvas, series) {
     }
     context.lineTo(x, y)
   })
-  context.strokeStyle = 'rgba(77, 224, 197, 0.18)'
-  context.lineWidth = 10
-  context.stroke()
-
-  context.beginPath()
-  series.actual.forEach((value, index) => {
-    const x = toX(index)
-    const y = toY(value)
-    if (index === 0) {
-      context.moveTo(x, y)
-      return
-    }
-    context.lineTo(x, y)
-  })
   context.strokeStyle = '#4de0c5'
   context.lineWidth = 3
   context.stroke()
@@ -293,6 +383,26 @@ function drawLineChart(canvas, series) {
     context.fillStyle = isDeviation ? '#ff7183' : '#4de0c5'
     context.fill()
   })
+
+  if (hoverPoint && series.actual[hoverPoint.index] !== undefined) {
+    const x = toX(hoverPoint.index)
+    const y = toY(series.actual[hoverPoint.index])
+
+    context.beginPath()
+    context.moveTo(x, CHART_PADDING.top)
+    context.lineTo(x, height - CHART_PADDING.bottom)
+    context.strokeStyle = 'rgba(245, 251, 255, 0.34)'
+    context.lineWidth = 1
+    context.stroke()
+
+    context.beginPath()
+    context.arc(x, y, 6, 0, Math.PI * 2)
+    context.fillStyle = '#06162f'
+    context.fill()
+    context.lineWidth = 3
+    context.strokeStyle = '#f5fbff'
+    context.stroke()
+  }
 }
 
 function SidebarIcon({ id }) {
@@ -326,6 +436,7 @@ function DashboardPage({ currentUser, onLogout }) {
   const [selectedConsumerClass, setSelectedConsumerClass] = useState('all')
   const [period, setPeriod] = useState('all')
   const [selectedDate, setSelectedDate] = useState('')
+  const [hoverPoint, setHoverPoint] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const userName = getUserName(currentUser)
@@ -348,6 +459,7 @@ function DashboardPage({ currentUser, onLogout }) {
   )
 
   const chartSeries = useMemo(() => buildChartSeries(timeseries), [timeseries])
+  const powerStats = useMemo(() => buildPowerStats(timeseries, summary), [summary, timeseries])
   const maxRoomEnergy = Math.max(...roomLoads.map((room) => room.energy_kwh || 0), 1)
   const selectedDeviceLabel =
     selectedDataName === 'all'
@@ -427,13 +539,28 @@ function DashboardPage({ currentUser, onLogout }) {
   }, [filters, queryParams, selectedDataName])
 
   useEffect(() => {
+    setHoverPoint(null)
+  }, [queryParams])
+
+  useEffect(() => {
+    if (period === 'all' || availableDates.length === 0) {
+      setHoverPoint(null)
+      return
+    }
+
+    if (!selectedDate || !availableDates.includes(selectedDate)) {
+      setSelectedDate(availableDates.at(-1))
+    }
+  }, [availableDates, period, selectedDate])
+
+  useEffect(() => {
     const canvas = canvasRef.current
 
     if (!canvas) {
       return undefined
     }
 
-    const redraw = () => drawLineChart(canvas, chartSeries)
+    const redraw = () => drawLineChart(canvas, chartSeries, hoverPoint)
     redraw()
 
     const resizeObserver = new ResizeObserver(redraw)
@@ -444,7 +571,7 @@ function DashboardPage({ currentUser, onLogout }) {
       resizeObserver.disconnect()
       window.removeEventListener('resize', redraw)
     }
-  }, [chartSeries])
+  }, [chartSeries, hoverPoint])
 
   function resetDependentFilters(nextDataName) {
     setSelectedDataName(nextDataName)
@@ -452,6 +579,15 @@ function DashboardPage({ currentUser, onLogout }) {
       setSelectedRoom('all')
       setSelectedConsumerClass('all')
     }
+  }
+
+  function handleChartPointerMove(event) {
+    const nextPoint = getNearestChartPoint(canvasRef.current, chartSeries, event)
+    setHoverPoint(nextPoint)
+  }
+
+  function handleChartPointerLeave() {
+    setHoverPoint(null)
   }
 
   return (
@@ -508,9 +644,6 @@ function DashboardPage({ currentUser, onLogout }) {
             <header className="energy-topbar">
               <div>
                 <h1>Дашборд энергопотребления</h1>
-                <p>
-                  Данные загружаются из SQLite-базы дашборда. Фильтры содержат только реально доступные счетчики, помещения и классы потребителей.
-                </p>
               </div>
 
               <div className="energy-toolbar">
@@ -595,18 +728,20 @@ function DashboardPage({ currentUser, onLogout }) {
                 </label>
 
                 <div className="energy-update-chip">
-                  До: <strong>{formatDateTime(summary?.date_to ?? filters?.date_range?.date_to)}</strong>
+                  До: <strong>{formatDateTime(powerStats.lastTimestamp ?? summary?.date_to ?? filters?.date_range?.date_to)}</strong>
                 </div>
               </div>
             </header>
 
             <section className="energy-kpi-grid">
               <article className="energy-kpi-card accent-primary">
-                <div className="energy-kpi-card__label">Текущая мощность</div>
+                <div className="energy-kpi-card__label">Средняя мощность</div>
                 <div className="energy-kpi-card__value">
-                  {formatNumber(summary?.current_power_kw)} <span>кВт</span>
+                  {formatNumber(powerStats.avgKw)} <span>кВт</span>
                 </div>
-                <div className="energy-kpi-card__meta">{selectedDeviceLabel}</div>
+                <div className="energy-kpi-card__meta">
+                  {selectedDeviceLabel}
+                </div>
               </article>
 
               <article className="energy-kpi-card">
@@ -622,10 +757,10 @@ function DashboardPage({ currentUser, onLogout }) {
               <article className="energy-kpi-card accent-warning">
                 <div className="energy-kpi-card__label">Максимальная мощность</div>
                 <div className="energy-kpi-card__value">
-                  {formatNumber(summary?.max_power_kw)} <span>кВт</span>
+                  {formatNumber(powerStats.maxKw)} <span>кВт</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Средняя мощность: {formatNumber(summary?.avg_power_kw)} кВт
+                  Пик: {formatDateTime(powerStats.peakTimestamp)}
                 </div>
               </article>
 
@@ -635,7 +770,7 @@ function DashboardPage({ currentUser, onLogout }) {
                   {formatNumber(summary?.devices_count, 0)} <span>шт.</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Точек графика: {formatNumber(summary?.points, 0)}
+                  Точек периода: {formatNumber(powerStats.pointsCount, 0)}
                 </div>
               </article>
             </section>
@@ -658,7 +793,21 @@ function DashboardPage({ currentUser, onLogout }) {
                     ref={canvasRef}
                     id="lineChart"
                     aria-label="График динамики энергопотребления"
+                    onPointerMove={handleChartPointerMove}
+                    onPointerLeave={handleChartPointerLeave}
                   />
+                  {hoverPoint ? (
+                    <div
+                      className="energy-chart-tooltip"
+                      style={{
+                        left: `${hoverPoint.x}px`,
+                        top: `${hoverPoint.y}px`,
+                      }}
+                    >
+                      <span>{hoverPoint.label}</span>
+                      <strong>{formatNumber(hoverPoint.value, 2)} кВт</strong>
+                    </div>
+                  ) : null}
                 </div>
               </article>
 
@@ -725,6 +874,38 @@ function DashboardPage({ currentUser, onLogout }) {
 
                 <div className="energy-summary-list">
                   <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Средняя мощность периода</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(powerStats.avgKw)} кВт
+                    </strong>
+                    <span className="energy-summary-item__note">среднее значение агрегированной линии</span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Минимальная мощность</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(powerStats.minKw)} кВт
+                    </strong>
+                    <span className="energy-summary-item__note">минимум в выбранном периоде</span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Пик нагрузки</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(powerStats.maxKw)} кВт
+                    </strong>
+                    <span className="energy-summary-item__note">{formatDateTime(powerStats.peakTimestamp)}</span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Коэффициент загрузки</span>
+                    <strong className="energy-summary-item__value">
+                      {formatPercent(powerStats.loadFactor)}
+                    </strong>
+                    <span className="energy-summary-item__note">средняя мощность / максимум периода</span>
+                  </div>
+
+                  <div className="energy-summary-item">
                     <span className="energy-summary-item__label">Среднее напряжение</span>
                     <strong className="energy-summary-item__value">
                       {formatNumber(summary?.avg_voltage_v)} В
@@ -751,13 +932,21 @@ function DashboardPage({ currentUser, onLogout }) {
                   </div>
 
                   <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Диапазон базы</span>
+                    <span className="energy-summary-item__label">Диапазон выборки</span>
                     <strong className="energy-summary-item__value">
-                      {formatDateTime(filters?.date_range?.date_from)}
+                      {formatDateTime(summary?.date_from)}
                     </strong>
                     <span className="energy-summary-item__note">
-                      до {formatDateTime(filters?.date_range?.date_to)}
+                      до {formatDateTime(summary?.date_to)}
                     </span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Строк измерений</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(summary?.points, 0)}
+                    </strong>
+                    <span className="energy-summary-item__note">сырые минутные записи счетчиков в базе</span>
                   </div>
                 </div>
               </article>
