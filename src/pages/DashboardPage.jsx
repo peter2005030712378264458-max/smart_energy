@@ -1,43 +1,46 @@
-import { useEffect, useId, useRef, useState } from 'react'
-import floorPlanDataSource from './dashboard/floorPlanData.js?raw'
-import floorPlanLabelsSource from './dashboard/floorPlanLabels.js?raw'
-import planFloorImage from '../assets/plan-floor-3-hd.png'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  getDashboardFilters,
+  getDashboardSummary,
+  getDashboardTimeseries,
+  getDeviceDetail,
+  getRoomLoads,
+  getTopDevices,
+} from '../features/dashboard/api/dashboardApi.js'
 import '../dashboard.css'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Дашборд' },
-  { id: 'heatmap', label: 'Тепловая карта' },
+  { id: 'links', label: 'Связи' },
 ]
 
 const PERIOD_OPTIONS = [
-  { value: '24h', label: '24 часа', multiplier: 1 },
-  { value: '7d', label: '7 дней', multiplier: 7 },
-  { value: '30d', label: '30 дней', multiplier: 30 },
+  { value: 'all', label: 'Весь период' },
+  { value: '24h', label: '24 часа', hours: 24 },
+  { value: '7d', label: '7 дней', hours: 24 * 7 },
 ]
 
-const FLOOR_PLAN = prepareFloorPlan(
-  parseAssignedJson(floorPlanDataSource, 'window.floorPlanData = '),
-  parseAssignedJson(floorPlanLabelsSource, 'window.floorPlanLabels = ')
-)
-
-function parseAssignedJson(source, prefix) {
-  return JSON.parse(source.trim().replace(prefix, '').replace(/;$/, ''))
-}
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max)
-}
-
 function formatNumber(value, digits = 1) {
+  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0
+
   return new Intl.NumberFormat('ru-RU', {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
-  }).format(value)
+  }).format(safeValue)
 }
 
-function formatSignedPercent(value) {
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${formatNumber(value, 1)}%`
+function formatDateTime(value) {
+  if (!value) {
+    return 'нет данных'
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(value))
 }
 
 function getUserName(currentUser) {
@@ -58,100 +61,103 @@ function getUserInitials(name) {
     .toUpperCase()
 }
 
-function bboxDistance(point, bbox) {
-  const [bx, by, bw, bh] = bbox
-  const dx = point.x < bx ? bx - point.x : point.x > bx + bw ? point.x - (bx + bw) : 0
-  const dy = point.y < by ? by - point.y : point.y > by + bh ? point.y - (by + bh) : 0
-  return Math.hypot(dx, dy)
+function toUtcDateKey(date) {
+  return date.toISOString().slice(0, 10)
 }
 
-function normalizeLabelRotation(angle) {
-  if (!angle) {
-    return 0
+function buildAvailableDates(dateRange) {
+  if (!dateRange?.date_from || !dateRange?.date_to) {
+    return []
   }
 
-  let normalized = angle % 360
+  const start = new Date(`${dateRange.date_from.slice(0, 10)}T00:00:00Z`)
+  const end = new Date(`${dateRange.date_to.slice(0, 10)}T00:00:00Z`)
+  const dates = []
 
-  if (normalized > 180) {
-    normalized -= 360
+  for (let current = start; current <= end; current = new Date(current.getTime() + 24 * 60 * 60 * 1000)) {
+    dates.push(toUtcDateKey(current))
   }
 
-  if (normalized > 90) {
-    normalized -= 180
-  }
-
-  if (normalized < -90) {
-    normalized += 180
-  }
-
-  return normalized
+  return dates
 }
 
-function getCompactRoomLabel(label) {
-  const match = label.match(/^\s*\d+\s*-\s*[^\s(]+/)
-  return match ? match[0].replace(/\s+/g, '') : label
+function formatDateLabel(dateKey) {
+  if (!dateKey) {
+    return 'Дата'
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date(`${dateKey}T00:00:00Z`))
 }
 
-function getRegionLabelFontSize(region) {
-  const [, , width, height] = region.bbox
-  return clamp(Math.min(width, height) * 0.22, 3.8, 6.6)
-}
+function getPeriodParams(period, dateRange, selectedDate) {
+  const periodOption = PERIOD_OPTIONS.find((option) => option.value === period)
 
-function prepareFloorPlan(floorPlan, labels) {
-  const regions = floorPlan.regions.map((region) => {
-    const matchedLabel = labels
-      .map((label) => {
-        const distanceToBox = bboxDistance(label, region.bbox)
-        const distanceToCenter = Math.hypot(
-          label.x - region.centroid[0],
-          label.y - region.centroid[1]
-        )
+  if (!periodOption?.hours || !dateRange?.date_to) {
+    return {}
+  }
 
-        return {
-          ...label,
-          distanceToBox,
-          score: distanceToBox * 2.2 + distanceToCenter,
-        }
-      })
-      .filter((label) => label.distanceToBox <= 28)
-      .sort((a, b) => a.score - b.score)[0]
+  const dateKey = selectedDate || dateRange.date_to.slice(0, 10)
+  const selectedDayStart = new Date(`${dateKey}T00:00:00Z`)
 
+  if (period === '24h') {
     return {
-      ...region,
-      roomLabel: matchedLabel?.text || region.name,
-      roomLabelRotation: matchedLabel?.rotation ?? 0,
+      from: `${dateKey}T00:00:00Z`,
+      to: `${dateKey}T23:59:59Z`,
     }
-  })
+  }
+
+  const days = Math.max(1, Math.round(periodOption.hours / 24))
+  const dateFrom = new Date(selectedDayStart.getTime() - (days - 1) * 24 * 60 * 60 * 1000)
 
   return {
-    ...floorPlan,
-    regions,
+    from: `${toUtcDateKey(dateFrom)}T00:00:00Z`,
+    to: `${dateKey}T23:59:59Z`,
   }
 }
 
-function buildTrendSeries(region) {
-  const baseline = [58, 60, 61, 65, 70, 73, 75, 77, 81, 84, 88, 93, 96, 101]
-  const factor = clamp((region?.current_kw ?? 12) / 12.4, 0.84, 1.42)
-  const drift = (region?.delta_pct ?? 0) / 10
+function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumerClass, period, dateRange, selectedDate }) {
+  return {
+    data_name: selectedDataName,
+    room: selectedRoom,
+    consumer_class: selectedConsumerClass,
+    ...getPeriodParams(period, dateRange, selectedDate),
+  }
+}
 
-  const actual = baseline.map((value, index) => {
-    const wave = Math.sin(index * 0.72) * 4.6 + Math.cos(index * 0.35) * 1.8
-    const accent = index > 8 ? drift * 4 : drift * 2.1
-    return Math.round((value + wave + accent) * factor)
-  })
+function normalizeChartValue(point) {
+  return Number(point.value ?? 0) / 1000
+}
 
-  const deviations = actual.reduce((indexes, value, index) => {
-    if (value - baseline[index] >= 10) {
-      indexes.push(index)
-    }
-    return indexes
-  }, [])
+function buildChartSeries(points) {
+  const source = points.length > 0 ? points : []
+  const maxItems = 32
+  const step = Math.max(1, Math.ceil(source.length / maxItems))
+  const sampled = source.filter((_, index) => index % step === 0)
+  const actual = sampled.map(normalizeChartValue)
+  const average =
+    actual.length > 0 ? actual.reduce((sum, value) => sum + value, 0) / actual.length : 0
+  const threshold = average * 1.25
 
   return {
-    labels: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
-    baseline,
+    labels: sampled.map((point) =>
+      new Intl.DateTimeFormat('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+      }).format(new Date(point.timestamp))
+    ),
     actual,
-    deviations,
+    baseline: actual.map(() => average),
+    deviations: actual.reduce((indexes, value, index) => {
+      if (average > 0 && value >= threshold) {
+        indexes.push(index)
+      }
+      return indexes
+    }, []),
   }
 }
 
@@ -169,6 +175,7 @@ function drawLineChart(canvas, series) {
   const width = parent.clientWidth
   const height = parent.clientHeight
   const ratio = window.devicePixelRatio || 1
+  const values = [...series.actual, ...series.baseline].filter((value) => Number.isFinite(value))
 
   canvas.width = width * ratio
   canvas.height = height * ratio
@@ -184,17 +191,24 @@ function drawLineChart(canvas, series) {
   context.setTransform(ratio, 0, 0, ratio, 0, 0)
   context.clearRect(0, 0, width, height)
 
-  const padding = { top: 18, right: 22, bottom: 42, left: 42 }
+  if (values.length === 0) {
+    context.fillStyle = 'rgba(159, 182, 215, 0.88)'
+    context.font = '15px "Segoe UI", sans-serif'
+    context.textAlign = 'center'
+    context.fillText('Нет данных для выбранных фильтров', width / 2, height / 2)
+    return
+  }
+
+  const padding = { top: 18, right: 22, bottom: 54, left: 56 }
   const chartWidth = width - padding.left - padding.right
   const chartHeight = height - padding.top - padding.bottom
-  const values = [...series.actual, ...series.baseline]
-  const minValue = Math.floor(Math.min(...values) / 5) * 5 - 5
-  const maxValue = Math.ceil(Math.max(...values) / 5) * 5 + 5
-  const xStep = chartWidth / (series.actual.length - 1)
+  const minValue = Math.max(0, Math.floor(Math.min(...values) * 0.9))
+  const maxValue = Math.max(1, Math.ceil(Math.max(...values) * 1.1))
+  const xStep = chartWidth / Math.max(series.actual.length - 1, 1)
 
   const toX = (index) => padding.left + index * xStep
   const toY = (value) =>
-    padding.top + ((maxValue - value) / (maxValue - minValue)) * chartHeight
+    padding.top + ((maxValue - value) / (maxValue - minValue || 1)) * chartHeight
 
   context.strokeStyle = 'rgba(155, 184, 223, 0.10)'
   context.lineWidth = 1
@@ -207,40 +221,32 @@ function drawLineChart(canvas, series) {
     context.stroke()
   }
 
-  for (let index = 0; index < series.actual.length; index += 1) {
-    const x = toX(index)
-    context.beginPath()
-    context.moveTo(x, padding.top)
-    context.lineTo(x, padding.top + chartHeight)
-    context.strokeStyle = 'rgba(155, 184, 223, 0.05)'
-    context.stroke()
-  }
-
   context.fillStyle = 'rgba(159, 182, 215, 0.88)'
   context.font = '12px "Segoe UI", sans-serif'
   context.textAlign = 'right'
 
   for (let index = 0; index <= 4; index += 1) {
-    const value = Math.round(maxValue - ((maxValue - minValue) / 4) * index)
+    const value = maxValue - ((maxValue - minValue) / 4) * index
     const y = padding.top + (chartHeight / 4) * index + 4
-    context.fillText(String(value), padding.left - 10, y)
+    context.fillText(`${formatNumber(value, 0)} кВт`, padding.left - 10, y)
   }
 
   context.textAlign = 'center'
+  const labelStep = Math.max(1, Math.ceil(series.labels.length / 6))
   series.labels.forEach((label, index) => {
-    context.fillText(label, toX(index), height - 16)
+    if (index % labelStep === 0) {
+      context.fillText(label, toX(index), height - 18)
+    }
   })
 
   context.beginPath()
   series.baseline.forEach((value, index) => {
     const x = toX(index)
     const y = toY(value)
-
     if (index === 0) {
       context.moveTo(x, y)
       return
     }
-
     context.lineTo(x, y)
   })
   context.setLineDash([7, 7])
@@ -253,12 +259,10 @@ function drawLineChart(canvas, series) {
   series.actual.forEach((value, index) => {
     const x = toX(index)
     const y = toY(value)
-
     if (index === 0) {
       context.moveTo(x, y)
       return
     }
-
     context.lineTo(x, y)
   })
   context.strokeStyle = 'rgba(77, 224, 197, 0.18)'
@@ -269,39 +273,15 @@ function drawLineChart(canvas, series) {
   series.actual.forEach((value, index) => {
     const x = toX(index)
     const y = toY(value)
-
     if (index === 0) {
       context.moveTo(x, y)
       return
     }
-
     context.lineTo(x, y)
   })
   context.strokeStyle = '#4de0c5'
   context.lineWidth = 3
   context.stroke()
-
-  const gradient = context.createLinearGradient(0, padding.top, 0, padding.top + chartHeight)
-  gradient.addColorStop(0, 'rgba(77, 224, 197, 0.18)')
-  gradient.addColorStop(1, 'rgba(77, 224, 197, 0.01)')
-
-  context.beginPath()
-  series.actual.forEach((value, index) => {
-    const x = toX(index)
-    const y = toY(value)
-
-    if (index === 0) {
-      context.moveTo(x, y)
-      return
-    }
-
-    context.lineTo(x, y)
-  })
-  context.lineTo(toX(series.actual.length - 1), padding.top + chartHeight)
-  context.lineTo(toX(0), padding.top + chartHeight)
-  context.closePath()
-  context.fillStyle = gradient
-  context.fill()
 
   series.actual.forEach((value, index) => {
     const x = toX(index)
@@ -311,77 +291,16 @@ function drawLineChart(canvas, series) {
     context.beginPath()
     context.arc(x, y, isDeviation ? 5 : 3.4, 0, Math.PI * 2)
     context.fillStyle = isDeviation ? '#ff7183' : '#4de0c5'
-    context.shadowColor = isDeviation
-      ? 'rgba(255, 113, 131, 0.62)'
-      : 'rgba(77, 224, 197, 0.40)'
-    context.shadowBlur = isDeviation ? 18 : 10
     context.fill()
-    context.shadowBlur = 0
-
-    if (isDeviation) {
-      context.beginPath()
-      context.arc(x, y, 9, 0, Math.PI * 2)
-      context.strokeStyle = 'rgba(255, 113, 131, 0.28)'
-      context.lineWidth = 2
-      context.stroke()
-    }
   })
-}
-
-function getZoomPercent(viewBox) {
-  return (FLOOR_PLAN.viewBox.width / viewBox.width) * 100
-}
-
-function clampViewBox(viewBox) {
-  const maxX = FLOOR_PLAN.viewBox.width - viewBox.width
-  const maxY = FLOOR_PLAN.viewBox.height - viewBox.height
-
-  return {
-    ...viewBox,
-    x: Math.min(Math.max(viewBox.x, 0), Math.max(maxX, 0)),
-    y: Math.min(Math.max(viewBox.y, 0), Math.max(maxY, 0)),
-  }
-}
-
-function zoomViewBox(currentViewBox, factor, anchorX, anchorY) {
-  const nextWidth = Math.min(
-    FLOOR_PLAN.viewBox.width,
-    Math.max(FLOOR_PLAN.viewBox.width * 0.08, currentViewBox.width * factor)
-  )
-  const nextHeight = nextWidth * (FLOOR_PLAN.viewBox.height / FLOOR_PLAN.viewBox.width)
-  const ratioX = (anchorX - currentViewBox.x) / currentViewBox.width
-  const ratioY = (anchorY - currentViewBox.y) / currentViewBox.height
-
-  return clampViewBox({
-    x: anchorX - nextWidth * ratioX,
-    y: anchorY - nextHeight * ratioY,
-    width: nextWidth,
-    height: nextHeight,
-  })
-}
-
-function getRegionTone(mode, level) {
-  return mode === 'absolute' ? `map-region mode-absolute level-${level}` : `map-region level-${level}`
-}
-
-function describeRegion(region) {
-  if (region.delta_pct >= 12) {
-    return 'Нагрузка заметно выше типичного профиля. Для этой зоны стоит проверить активное оборудование и режим работы.'
-  }
-
-  if (region.delta_pct >= 5) {
-    return 'Зона работает выше среднего уровня, но без резкого скачка. Полезно сверить фактический режим с расписанием.'
-  }
-
-  return 'Нагрузка близка к обычному уровню. На текущем снимке помещение не выделяется на фоне этажа.'
 }
 
 function SidebarIcon({ id }) {
-  if (id === 'heatmap') {
+  if (id === 'links') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M4 5h16v14H4z" />
-        <path d="M9 5v14M15 5v14M4 10h16M4 15h16" opacity="0.65" />
+        <path d="M7 12h10M9 7h6M9 17h6" />
+        <path d="M5 4h14v16H5z" />
       </svg>
     )
   }
@@ -394,41 +313,118 @@ function SidebarIcon({ id }) {
 }
 
 function DashboardPage({ currentUser, onLogout }) {
-  const clipPathPrefix = useId().replace(/:/g, '')
   const canvasRef = useRef(null)
-  const svgRef = useRef(null)
-  const dragStateRef = useRef(null)
   const [activeView, setActiveView] = useState('dashboard')
-  const [selectedRegionId, setSelectedRegionId] = useState(FLOOR_PLAN.regions[0]?.raw_id ?? null)
-  const [period, setPeriod] = useState('7d')
-  const [mapMode, setMapMode] = useState('deviation')
-  const [viewBox, setViewBox] = useState({
-    x: 0,
-    y: 0,
-    width: FLOOR_PLAN.viewBox.width,
-    height: FLOOR_PLAN.viewBox.height,
-  })
-  const [isDragging, setIsDragging] = useState(false)
-  const selectedRegion =
-    FLOOR_PLAN.regions.find((region) => region.raw_id === selectedRegionId) || FLOOR_PLAN.regions[0]
-  const periodOption = PERIOD_OPTIONS.find((option) => option.value === period) || PERIOD_OPTIONS[1]
+  const [filters, setFilters] = useState(null)
+  const [summary, setSummary] = useState(null)
+  const [timeseries, setTimeseries] = useState([])
+  const [topDevices, setTopDevices] = useState([])
+  const [roomLoads, setRoomLoads] = useState([])
+  const [deviceDetail, setDeviceDetail] = useState(null)
+  const [selectedDataName, setSelectedDataName] = useState('all')
+  const [selectedRoom, setSelectedRoom] = useState('all')
+  const [selectedConsumerClass, setSelectedConsumerClass] = useState('all')
+  const [period, setPeriod] = useState('all')
+  const [selectedDate, setSelectedDate] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const userName = getUserName(currentUser)
-  const totalCurrentLoad = FLOOR_PLAN.regions.reduce((sum, region) => sum + region.current_kw, 0)
-  const averageDelta =
-    FLOOR_PLAN.regions.reduce((sum, region) => sum + region.delta_pct, 0) / FLOOR_PLAN.regions.length
-  const alertRegions = FLOOR_PLAN.regions.filter((region) => region.level === 'high')
-  const topLoadRegions = [...FLOOR_PLAN.regions]
-    .sort((left, right) => right.current_kw - left.current_kw)
-    .slice(0, 6)
-  const trendSeries = buildTrendSeries(selectedRegion)
-  const estimatedPeriodLoad = totalCurrentLoad * 24 * periodOption.multiplier
-  const maxLoadRegion = topLoadRegions[0]
-  const averageLoad = totalCurrentLoad / FLOOR_PLAN.regions.length
-  const nightDelta =
-    FLOOR_PLAN.regions.filter((region) => region.delta_pct > 0)
-      .sort((left, right) => right.delta_pct - left.delta_pct)[0]?.delta_pct ?? 0
-  const zoomPercent = Math.round(getZoomPercent(viewBox))
-  const labelsVisible = zoomPercent >= 260
+  const availableDates = useMemo(
+    () => buildAvailableDates(filters?.date_range),
+    [filters?.date_range]
+  )
+
+  const queryParams = useMemo(
+    () =>
+      buildDashboardParams({
+        selectedDataName,
+        selectedRoom,
+        selectedConsumerClass,
+        period,
+        dateRange: filters?.date_range,
+        selectedDate,
+      }),
+    [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom]
+  )
+
+  const chartSeries = useMemo(() => buildChartSeries(timeseries), [timeseries])
+  const maxRoomEnergy = Math.max(...roomLoads.map((room) => room.energy_kwh || 0), 1)
+  const selectedDeviceLabel =
+    selectedDataName === 'all'
+      ? 'Все счетчики'
+      : filters?.devices.find((device) => device.data_name === selectedDataName)?.label ?? selectedDataName
+
+  useEffect(() => {
+    let active = true
+
+    async function loadFilters() {
+      try {
+        const nextFilters = await getDashboardFilters()
+        if (active) {
+          setFilters(nextFilters)
+          setSelectedDate(nextFilters.date_range?.date_to?.slice(0, 10) ?? '')
+          setError('')
+        }
+      } catch (requestError) {
+        if (active) {
+          setError(requestError.message)
+        }
+      }
+    }
+
+    loadFilters()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!filters) {
+      return undefined
+    }
+
+    let active = true
+
+    async function loadDashboardData() {
+      setLoading(true)
+      try {
+        const [nextSummary, nextTimeseries, nextTopDevices, nextRoomLoads] = await Promise.all([
+          getDashboardSummary(queryParams),
+          getDashboardTimeseries({ ...queryParams, metric: 'active_power_w_avg' }),
+          getTopDevices(queryParams),
+          getRoomLoads(queryParams),
+        ])
+        const nextDeviceDetail =
+          selectedDataName !== 'all'
+            ? await getDeviceDetail(selectedDataName, queryParams)
+            : null
+
+        if (active) {
+          setSummary(nextSummary)
+          setTimeseries(nextTimeseries.points ?? [])
+          setTopDevices(nextTopDevices)
+          setRoomLoads(nextRoomLoads)
+          setDeviceDetail(nextDeviceDetail)
+          setError('')
+        }
+      } catch (requestError) {
+        if (active) {
+          setError(requestError.message)
+        }
+      } finally {
+        if (active) {
+          setLoading(false)
+        }
+      }
+    }
+
+    loadDashboardData()
+
+    return () => {
+      active = false
+    }
+  }, [filters, queryParams, selectedDataName])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -437,7 +433,7 @@ function DashboardPage({ currentUser, onLogout }) {
       return undefined
     }
 
-    const redraw = () => drawLineChart(canvas, trendSeries)
+    const redraw = () => drawLineChart(canvas, chartSeries)
     redraw()
 
     const resizeObserver = new ResizeObserver(redraw)
@@ -448,90 +444,14 @@ function DashboardPage({ currentUser, onLogout }) {
       resizeObserver.disconnect()
       window.removeEventListener('resize', redraw)
     }
-  }, [trendSeries])
+  }, [chartSeries])
 
-  function handleWheel(event) {
-    event.preventDefault()
-
-    const svg = svgRef.current
-
-    if (!svg) {
-      return
+  function resetDependentFilters(nextDataName) {
+    setSelectedDataName(nextDataName)
+    if (nextDataName !== 'all') {
+      setSelectedRoom('all')
+      setSelectedConsumerClass('all')
     }
-
-    const rect = svg.getBoundingClientRect()
-    const mouseX = (event.clientX - rect.left) / rect.width
-    const mouseY = (event.clientY - rect.top) / rect.height
-
-    setViewBox((currentViewBox) => {
-      const anchorX = currentViewBox.x + currentViewBox.width * mouseX
-      const anchorY = currentViewBox.y + currentViewBox.height * mouseY
-      return zoomViewBox(currentViewBox, event.deltaY > 0 ? 1.16 : 0.86, anchorX, anchorY)
-    })
-  }
-
-  function handlePointerDown(event) {
-    const svg = svgRef.current
-
-    if (!svg) {
-      return
-    }
-
-    dragStateRef.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: viewBox.x,
-      originY: viewBox.y,
-      width: viewBox.width,
-      height: viewBox.height,
-    }
-
-    setIsDragging(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
-
-  function handlePointerMove(event) {
-    const dragState = dragStateRef.current
-    const svg = svgRef.current
-
-    if (!dragState || !svg) {
-      return
-    }
-
-    const rect = svg.getBoundingClientRect()
-    const dx = (event.clientX - dragState.startX) * (dragState.width / rect.width)
-    const dy = (event.clientY - dragState.startY) * (dragState.height / rect.height)
-
-    setViewBox(
-      clampViewBox({
-        ...viewBox,
-        x: dragState.originX - dx,
-        y: dragState.originY - dy,
-      })
-    )
-  }
-
-  function handlePointerUp(event) {
-    dragStateRef.current = null
-    setIsDragging(false)
-
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    } catch {
-      // ignore
-    }
-  }
-
-  function handleZoom(factor) {
-    const svg = svgRef.current
-
-    if (!svg) {
-      return
-    }
-
-    const anchorX = viewBox.x + viewBox.width / 2
-    const anchorY = viewBox.y + viewBox.height / 2
-    setViewBox(zoomViewBox(viewBox, factor, anchorX, anchorY))
   }
 
   return (
@@ -568,7 +488,7 @@ function DashboardPage({ currentUser, onLogout }) {
           <div className="energy-sidebar__footer">
             <div className="energy-status-pill">
               <span className="energy-status-pill__dot" />
-              <span>Система активна</span>
+              <span>{loading ? 'Загружаем данные' : 'База подключена'}</span>
             </div>
 
             <button className="energy-user-card" type="button" onClick={onLogout}>
@@ -582,31 +502,69 @@ function DashboardPage({ currentUser, onLogout }) {
         </aside>
 
         <section className="energy-main">
+          {error ? <div className="energy-alert">{error}</div> : null}
+
           <section className={activeView === 'dashboard' ? 'energy-view active' : 'energy-view'}>
             <header className="energy-topbar">
               <div>
                 <h1>Дашборд энергопотребления</h1>
                 <p>
-                  Оперативный обзор потребления, ключевых изменений и нагрузки по зонам.
+                  Данные загружаются из SQLite-базы дашборда. Фильтры содержат только реально доступные счетчики, помещения и классы потребителей.
                 </p>
               </div>
 
               <div className="energy-toolbar">
-                <label className="energy-control">
-                  <span>Объект</span>
-                  <select defaultValue="building-1">
-                    <option value="building-1">Строение 1</option>
-                    <option value="building-a">Корпус А</option>
-                    <option value="all">Весь объект</option>
+                <label className="energy-control energy-control--wide">
+                  <span>Счетчик</span>
+                  <select
+                    value={selectedDataName}
+                    onChange={(event) => resetDependentFilters(event.target.value)}
+                    disabled={!filters}
+                  >
+                    <option value="all">Все счетчики</option>
+                    {filters?.devices.map((device) => (
+                      <option value={device.data_name} key={device.data_name}>
+                        {device.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
                 <label className="energy-control">
-                  <span>Уровень</span>
-                  <select defaultValue="floor">
-                    <option value="floor">Этаж</option>
-                    <option value="room">Помещение</option>
-                    <option value="zone">Зона</option>
+                  <span>Помещение</span>
+                  <select
+                    value={selectedRoom}
+                    onChange={(event) => {
+                      setSelectedRoom(event.target.value)
+                      setSelectedDataName('all')
+                    }}
+                    disabled={!filters || selectedDataName !== 'all'}
+                  >
+                    <option value="all">Все помещения</option>
+                    {filters?.rooms.map((room) => (
+                      <option value={room.room} key={room.room}>
+                        {room.room}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="energy-control">
+                  <span>Класс</span>
+                  <select
+                    value={selectedConsumerClass}
+                    onChange={(event) => {
+                      setSelectedConsumerClass(event.target.value)
+                      setSelectedDataName('all')
+                    }}
+                    disabled={!filters || selectedDataName !== 'all'}
+                  >
+                    <option value="all">Все классы</option>
+                    {filters?.consumer_classes.map((item) => (
+                      <option value={item.consumer_class} key={item.consumer_class}>
+                        {item.consumer_class}
+                      </option>
+                    ))}
                   </select>
                 </label>
 
@@ -621,57 +579,63 @@ function DashboardPage({ currentUser, onLogout }) {
                   </select>
                 </label>
 
-                <button
-                  className="energy-ghost-button"
-                  type="button"
-                  onClick={() => setActiveView('heatmap')}
-                >
-                  К карте
-                </button>
+                <label className="energy-control">
+                  <span>Дата</span>
+                  <select
+                    value={selectedDate}
+                    onChange={(event) => setSelectedDate(event.target.value)}
+                    disabled={!filters || period === 'all'}
+                  >
+                    {availableDates.map((dateKey) => (
+                      <option value={dateKey} key={dateKey}>
+                        {formatDateLabel(dateKey)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
                 <div className="energy-update-chip">
-                  Обновлено: <strong>14:32</strong>
+                  До: <strong>{formatDateTime(summary?.date_to ?? filters?.date_range?.date_to)}</strong>
                 </div>
               </div>
             </header>
 
             <section className="energy-kpi-grid">
               <article className="energy-kpi-card accent-primary">
-                <div className="energy-kpi-card__label">Текущее потребление</div>
+                <div className="energy-kpi-card__label">Текущая мощность</div>
                 <div className="energy-kpi-card__value">
-                  {formatNumber(selectedRegion.current_kw)} <span>кВт</span>
+                  {formatNumber(summary?.current_power_kw)} <span>кВт</span>
                 </div>
-                <div className="energy-kpi-card__meta">
-                  Текущая мощность в зоне {selectedRegion.roomLabel}
-                </div>
+                <div className="energy-kpi-card__meta">{selectedDeviceLabel}</div>
               </article>
 
               <article className="energy-kpi-card">
-                <div className="energy-kpi-card__label">За выбранный период</div>
+                <div className="energy-kpi-card__label">Энергия за период</div>
                 <div className="energy-kpi-card__value">
-                  {formatNumber(estimatedPeriodLoad, 0)} <span>кВт·ч</span>
+                  {formatNumber(summary?.total_energy_kwh, 0)} <span>кВт·ч</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Суммарное потребление по всему этажу за {periodOption.label.toLowerCase()}
+                  {formatDateTime(summary?.date_from)} - {formatDateTime(summary?.date_to)}
                 </div>
               </article>
 
               <article className="energy-kpi-card accent-warning">
-                <div className="energy-kpi-card__label">Отклонение от baseline</div>
+                <div className="energy-kpi-card__label">Максимальная мощность</div>
                 <div className="energy-kpi-card__value">
-                  {formatSignedPercent(averageDelta)} <span>в среднем</span>
+                  {formatNumber(summary?.max_power_kw)} <span>кВт</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Среднее отклонение от типичного профиля по этажу
+                  Средняя мощность: {formatNumber(summary?.avg_power_kw)} кВт
                 </div>
               </article>
 
               <article className="energy-kpi-card accent-danger">
-                <div className="energy-kpi-card__label">Отклонения</div>
+                <div className="energy-kpi-card__label">Счетчики в выборке</div>
                 <div className="energy-kpi-card__value">
-                  {alertRegions.length} <span>случаев</span>
+                  {formatNumber(summary?.devices_count, 0)} <span>шт.</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Зон с повышенной нагрузкой в текущем снимке
+                  Точек графика: {formatNumber(summary?.points, 0)}
                 </div>
               </article>
             </section>
@@ -680,13 +644,13 @@ function DashboardPage({ currentUser, onLogout }) {
               <article className="energy-panel energy-chart-panel">
                 <div className="energy-panel__head">
                   <div>
-                    <h2>Динамика потребления</h2>
-                    <p>Факт, ожидаемое значение и отмеченные отклонения</p>
+                    <h2>Динамика активной мощности</h2>
+                    <p>Минутные агрегаты `active_power_w_avg`, сумма по выбранной группе</p>
                   </div>
                   <div className="energy-legend">
                     <span><i className="actual" />Факт</span>
-                    <span><i className="baseline" />Baseline</span>
-                    <span><i className="alert" />Отклонения</span>
+                    <span><i className="baseline" />Среднее</span>
+                    <span><i className="alert" />Пики</span>
                   </div>
                 </div>
                 <div className="energy-chart-wrap">
@@ -701,25 +665,19 @@ function DashboardPage({ currentUser, onLogout }) {
               <article className="energy-panel">
                 <div className="energy-panel__head compact">
                   <div>
-                    <h2>События нагрузки</h2>
-                    <p>Последние отклонения и пики по выбранной зоне</p>
+                    <h2>Топ счетчиков</h2>
+                    <p>По суммарной энергии в выбранном периоде</p>
                   </div>
                 </div>
 
                 <div className="energy-event-list">
-                  {topLoadRegions.slice(0, 5).map((region, index) => (
-                    <article
-                      className={`energy-event-item ${region.level}`}
-                      key={region.raw_id}
-                    >
-                      <div className="energy-event-item__time">
-                        {`${14 - index}:${index === 0 ? '10' : '0' + index}`}
-                      </div>
+                  {topDevices.slice(0, 6).map((device, index) => (
+                    <article className="energy-event-item" key={device.data_name}>
+                      <div className="energy-event-item__time">#{index + 1}</div>
                       <div className="energy-event-item__body">
-                        <div className="energy-event-item__title">{region.roomLabel}</div>
+                        <div className="energy-event-item__title">{device.label}</div>
                         <div className="energy-event-item__text">
-                          Нагрузка {formatSignedPercent(region.delta_pct)} к профилю,
-                          текущая мощность {formatNumber(region.current_kw)} кВт
+                          {formatNumber(device.energy_kwh, 0)} кВт·ч · максимум {formatNumber(device.max_power_kw)} кВт
                         </div>
                       </div>
                     </article>
@@ -732,28 +690,25 @@ function DashboardPage({ currentUser, onLogout }) {
               <article className="energy-panel">
                 <div className="energy-panel__head compact">
                   <div>
-                    <h2>Потребление по зонам</h2>
-                    <p>Наиболее нагруженные зоны на текущий момент</p>
+                    <h2>Потребление по помещениям</h2>
+                    <p>Помещения, связанные со счетчиками через справочники</p>
                   </div>
                 </div>
 
                 <div className="energy-bar-chart">
-                  {topLoadRegions.map((region) => (
-                    <div
-                      className={region.level === 'high' ? 'energy-bar-row alert' : 'energy-bar-row'}
-                      key={region.raw_id}
-                    >
-                      <div className="energy-bar-row__label">{region.roomLabel}</div>
+                  {roomLoads.map((room) => (
+                    <div className="energy-bar-row" key={room.room}>
+                      <div className="energy-bar-row__label">{room.room}</div>
                       <div className="energy-bar-row__track">
                         <span
                           className="energy-bar-row__fill"
                           style={{
-                            width: `${(region.current_kw / maxLoadRegion.current_kw) * 100}%`,
+                            width: `${((room.energy_kwh || 0) / maxRoomEnergy) * 100}%`,
                           }}
                         />
                       </div>
                       <div className="energy-bar-row__value">
-                        {formatNumber(region.current_kw)} кВт
+                        {formatNumber(room.energy_kwh, 0)} кВт·ч
                       </div>
                     </div>
                   ))}
@@ -764,46 +719,44 @@ function DashboardPage({ currentUser, onLogout }) {
                 <div className="energy-panel__head compact">
                   <div>
                     <h2>Краткая сводка</h2>
-                    <p>Самые важные наблюдения по текущему состоянию этажа</p>
+                    <p>Параметры выбранной выборки из базы</p>
                   </div>
                 </div>
 
                 <div className="energy-summary-list">
                   <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Пиковая зона</span>
-                    <strong className="energy-summary-item__value">{maxLoadRegion.roomLabel}</strong>
+                    <span className="energy-summary-item__label">Среднее напряжение</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(summary?.avg_voltage_v)} В
+                    </strong>
+                    <span className="energy-summary-item__note">по доступным фазам счетчиков</span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Средняя частота</span>
+                    <strong className="energy-summary-item__value">
+                      {formatNumber(summary?.avg_frequency_hz, 2)} Гц
+                    </strong>
+                    <span className="energy-summary-item__note">из `frequency_hz_avg`</span>
+                  </div>
+
+                  <div className="energy-summary-item">
+                    <span className="energy-summary-item__label">Самый энергоемкий счетчик</span>
+                    <strong className="energy-summary-item__value">
+                      {topDevices[0]?.label ?? 'нет данных'}
+                    </strong>
                     <span className="energy-summary-item__note">
-                      {formatNumber(maxLoadRegion.current_kw)} кВт сейчас
+                      {formatNumber(topDevices[0]?.energy_kwh, 0)} кВт·ч
                     </span>
                   </div>
 
                   <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Максимум за период</span>
+                    <span className="energy-summary-item__label">Диапазон базы</span>
                     <strong className="energy-summary-item__value">
-                      {formatNumber(maxLoadRegion.peak_kw)} кВт
+                      {formatDateTime(filters?.date_range?.date_from)}
                     </strong>
                     <span className="energy-summary-item__note">
-                      в зоне {maxLoadRegion.roomLabel}
-                    </span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Средняя нагрузка</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(averageLoad)} кВт
-                    </strong>
-                    <span className="energy-summary-item__note">
-                      по всем помещениям этажа
-                    </span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Ночная нагрузка</span>
-                    <strong className="energy-summary-item__value">
-                      {formatSignedPercent(nightDelta)}
-                    </strong>
-                    <span className="energy-summary-item__note">
-                      выше типичного уровня в чувствительных зонах
+                      до {formatDateTime(filters?.date_range?.date_to)}
                     </span>
                   </div>
                 </div>
@@ -811,233 +764,82 @@ function DashboardPage({ currentUser, onLogout }) {
             </section>
           </section>
 
-          <section className={activeView === 'heatmap' ? 'energy-view active' : 'energy-view'}>
+          <section className={activeView === 'links' ? 'energy-view active' : 'energy-view'}>
             <header className="energy-topbar">
               <div>
-                <h1>Тепловая карта этажа</h1>
-                <p>
-                  Реальный план из Excel-файла. Масштабируй колесом мыши, перетаскивай план и нажимай на помещения.
-                </p>
+                <h1>Связи счетчика</h1>
+                <p>Автоматы, помещения и потребители из справочников базы данных.</p>
               </div>
 
               <div className="energy-toolbar">
-                <label className="energy-control">
-                  <span>Этаж</span>
-                  <select defaultValue="3">
-                    <option value="3">3 этаж</option>
+                <label className="energy-control energy-control--wide">
+                  <span>Счетчик</span>
+                  <select
+                    value={selectedDataName}
+                    onChange={(event) => resetDependentFilters(event.target.value)}
+                    disabled={!filters}
+                  >
+                    <option value="all">Выберите счетчик</option>
+                    {filters?.devices.map((device) => (
+                      <option value={device.data_name} key={device.data_name}>
+                        {device.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
-
-                <label className="energy-control">
-                  <span>Режим</span>
-                  <select value={mapMode} onChange={(event) => setMapMode(event.target.value)}>
-                    <option value="deviation">Отклонение от профиля</option>
-                    <option value="absolute">Текущая нагрузка</option>
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Снимок</span>
-                  <select defaultValue="now">
-                    <option value="now">Сейчас</option>
-                    <option value="1h">1 час назад</option>
-                    <option value="9am">Сегодня 09:00</option>
-                  </select>
-                </label>
-
-                <button
-                  className="energy-ghost-button"
-                  type="button"
-                  onClick={() => setActiveView('dashboard')}
-                >
-                  К дашборду
-                </button>
               </div>
             </header>
 
-            <section className="energy-content-grid energy-content-grid--heatmap">
-              <article className="energy-panel">
-                <div className="energy-panel__head energy-panel__head--map">
-                  <div>
-                    <h2>{FLOOR_PLAN.planTitle}</h2>
-                    <p>{FLOOR_PLAN.sourceNote}</p>
-                  </div>
-
-                  <div className="energy-map-actions">
-                    <div className="energy-legend">
-                      <span><i className="scale-low" />Близко к обычному уровню</span>
-                      <span><i className="scale-mid" />Выше среднего</span>
-                      <span><i className="scale-high" />Пиковая нагрузка</span>
-                    </div>
-
-                    <div className="energy-zoom-controls">
-                      <button type="button" onClick={() => handleZoom(1.18)}>−</button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setViewBox({
-                            x: 0,
-                            y: 0,
-                            width: FLOOR_PLAN.viewBox.width,
-                            height: FLOOR_PLAN.viewBox.height,
-                          })
-                        }
-                      >
-                        100%
-                      </button>
-                      <button type="button" onClick={() => handleZoom(0.84)}>+</button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="energy-map-hint">
-                  <span>
-                    Масштаб: <strong>{zoomPercent}%</strong>
-                  </span>
-                  <span>•</span>
-                  <span>
-                    Интерактивных помещений: <strong>{FLOOR_PLAN.regions.length}</strong>
-                  </span>
-                  <span>•</span>
-                  <span>Нажми на помещение, чтобы увидеть показатели справа</span>
-                </div>
-
-                <div
-                  className={isDragging ? 'energy-map-viewport dragging' : 'energy-map-viewport'}
-                  onWheel={handleWheel}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerLeave={handlePointerUp}
-                  onPointerCancel={handlePointerUp}
-                >
-                  <svg
-                    ref={svgRef}
-                    className="energy-floor-svg"
-                    xmlns="http://www.w3.org/2000/svg"
-                    viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-                    preserveAspectRatio="xMidYMid meet"
-                  >
-                    <g>
-                      <image
-                        href={planFloorImage}
-                        x="0"
-                        y="0"
-                        width={FLOOR_PLAN.viewBox.width}
-                        height={FLOOR_PLAN.viewBox.height}
-                      />
-
-                      {FLOOR_PLAN.regions.map((region) => (
-                        <path
-                          key={region.raw_id}
-                          d={region.path}
-                          className={
-                            selectedRegionId === region.raw_id
-                              ? `${getRegionTone(mapMode, region.level)} selected`
-                              : getRegionTone(mapMode, region.level)
-                          }
-                          onClick={() => setSelectedRegionId(region.raw_id)}
-                        >
-                          <title>
-                            {`${region.roomLabel} - ${
-                              mapMode === 'absolute'
-                                ? `${formatNumber(region.current_kw)} kW`
-                                : formatSignedPercent(region.delta_pct)
-                            }`}
-                          </title>
-                        </path>
-                      ))}
-
-                      <g className={labelsVisible ? 'energy-label-layer visible' : 'energy-label-layer'}>
-                        <defs>
-                          {FLOOR_PLAN.regions.map((region) => (
-                            <clipPath id={`${clipPathPrefix}-${region.raw_id}`} key={region.raw_id}>
-                              <path d={region.path} />
-                            </clipPath>
-                          ))}
-                        </defs>
-
-                        {FLOOR_PLAN.regions.map((region) => {
-                          if (!region.roomLabel) {
-                            return null
-                          }
-
-                          const rotation = normalizeLabelRotation(region.roomLabelRotation)
-
-                          return (
-                            <text
-                              key={`${region.raw_id}-label`}
-                              className="energy-room-label"
-                              x={region.centroid[0]}
-                              y={region.centroid[1]}
-                              fontSize={getRegionLabelFontSize(region)}
-                              clipPath={`url(#${clipPathPrefix}-${region.raw_id})`}
-                              transform={
-                                rotation
-                                  ? `rotate(${rotation} ${region.centroid[0]} ${region.centroid[1]})`
-                                  : undefined
-                              }
-                            >
-                              {getCompactRoomLabel(region.roomLabel)}
-                            </text>
-                          )
-                        })}
-                      </g>
-                    </g>
-                  </svg>
-                </div>
-              </article>
-
-              <article className="energy-panel">
+            {selectedDataName === 'all' ? (
+              <section className="energy-panel">
                 <div className="energy-panel__head compact">
                   <div>
-                    <h2>Детали по помещению</h2>
-                    <p>Показатели выбранной области на плане</p>
+                    <h2>Выберите счетчик</h2>
+                    <p>После выбора появятся реальные потребители и автоматы из базы.</p>
                   </div>
                 </div>
-
-                <div className="energy-room-details">
-                  <div className="energy-room-details__main">
-                    <div className="energy-room-details__caption">Выбрано</div>
-                    <div className="energy-room-details__room">{selectedRegion.roomLabel}</div>
-                    <div className="energy-room-details__delta">
-                      {selectedRegion.level_label} · {formatSignedPercent(selectedRegion.delta_pct)} к профилю
+              </section>
+            ) : (
+              <section className="energy-content-grid energy-content-grid--secondary">
+                <article className="energy-panel">
+                  <div className="energy-panel__head compact">
+                    <div>
+                      <h2>Потребители</h2>
+                      <p>{deviceDetail?.consumers?.length ?? 0} записей</p>
                     </div>
                   </div>
 
-                  <div className="energy-room-details__list">
-                    <div className="energy-room-details__row">
-                      <span>Текущая нагрузка</span>
-                      <strong>{formatNumber(selectedRegion.current_kw)} кВт</strong>
-                    </div>
-                    <div className="energy-room-details__row">
-                      <span>Среднее за день</span>
-                      <strong>{formatNumber(selectedRegion.avg_kw)} кВт</strong>
-                    </div>
-                    <div className="energy-room-details__row">
-                      <span>Пик за период</span>
-                      <strong>{formatNumber(selectedRegion.peak_kw)} кВт</strong>
-                    </div>
-                    <div className="energy-room-details__row">
-                      <span>Доля нагрузки этажа</span>
-                      <strong>{formatNumber(selectedRegion.share_pct)}%</strong>
-                    </div>
-                    <div className="energy-room-details__row">
-                      <span>Позиция по нагрузке</span>
-                      <strong>{selectedRegion.load_rank} место</strong>
-                    </div>
-                    <div className="energy-room-details__row">
-                      <span>Последнее обновление</span>
-                      <strong>14:29</strong>
+                  <div className="energy-table">
+                    {(deviceDetail?.consumers ?? []).map((consumer, index) => (
+                      <div className="energy-table__row" key={`${consumer.power_consumer}-${index}`}>
+                        <span>{consumer.power_consumer}</span>
+                        <strong>{consumer.consumer_class}</strong>
+                        <em>{consumer.room}</em>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+
+                <article className="energy-panel">
+                  <div className="energy-panel__head compact">
+                    <div>
+                      <h2>Автоматы и помещения</h2>
+                      <p>{deviceDetail?.breakers?.length ?? 0} записей</p>
                     </div>
                   </div>
 
-                  <div className="energy-room-details__note">
-                    {describeRegion(selectedRegion)}
+                  <div className="energy-table">
+                    {(deviceDetail?.breakers ?? []).map((breaker, index) => (
+                      <div className="energy-table__row" key={`${breaker.breaker}-${index}`}>
+                        <span>{breaker.breaker}</span>
+                        <strong>{breaker.room}</strong>
+                        <em>{[breaker.floor, breaker.building].filter(Boolean).join(' · ')}</em>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              </article>
-            </section>
+                </article>
+              </section>
+            )}
           </section>
         </section>
       </div>

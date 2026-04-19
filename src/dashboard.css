@@ -298,6 +298,19 @@
   font: inherit;
 }
 
+.energy-control--wide select {
+  width: min(360px, 58vw);
+}
+
+.energy-alert {
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  color: var(--energy-text);
+  background: rgba(255, 113, 131, 0.10);
+  border: 1px solid rgba(255, 113, 131, 0.26);
+}
+
 .energy-ghost-button,
 .energy-zoom-controls button {
   border: 1px solid rgba(77, 224, 197, 0.24);
@@ -633,6 +646,46 @@
   font-size: 0.88rem;
 }
 
+.energy-table {
+  display: grid;
+  gap: 10px;
+  max-height: 620px;
+  overflow: auto;
+}
+
+.energy-table__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(120px, 0.7fr) minmax(120px, 0.7fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(142, 177, 219, 0.08);
+}
+
+.energy-table__row span,
+.energy-table__row strong,
+.energy-table__row em {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.energy-table__row span {
+  color: var(--energy-text);
+}
+
+.energy-table__row strong {
+  color: var(--energy-primary-2);
+  font-size: 0.92rem;
+}
+
+.energy-table__row em {
+  color: var(--energy-text-secondary);
+  font-style: normal;
+  font-size: 0.9rem;
+}
+
 .energy-map-actions {
   display: flex;
   flex-direction: column;
@@ -899,5 +952,9 @@
   .energy-bar-row {
     grid-template-columns: 100px minmax(0, 1fr) 66px;
     gap: 10px;
+  }
+
+  .energy-table__row {
+    grid-template-columns: 1fr;
   }
 }
