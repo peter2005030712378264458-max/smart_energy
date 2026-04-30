@@ -1,7 +1,9 @@
+import { buildApiUrl } from '../../../shared/api/config.js'
+
 export const API_BASE = '/api/auth'
 
 export async function login(payload) {
-  return fetch(`${API_BASE}/login/`, {
+  return fetch(buildApiUrl(`${API_BASE}/login/`), {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -12,7 +14,7 @@ export async function login(payload) {
 }
 
 export async function register(payload) {
-  return fetch(`${API_BASE}/register/`, {
+  return fetch(buildApiUrl(`${API_BASE}/register/`), {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -23,14 +25,14 @@ export async function register(payload) {
 }
 
 export async function refresh() {
-  return fetch(`${API_BASE}/refresh/`, {
+  return fetch(buildApiUrl(`${API_BASE}/refresh/`), {
     method: 'POST',
     credentials: 'include',
   })
 }
 
 export async function logout() {
-  return fetch(`${API_BASE}/logout/`, {
+  return fetch(buildApiUrl(`${API_BASE}/logout/`), {
     method: 'POST',
     credentials: 'include', 
   })

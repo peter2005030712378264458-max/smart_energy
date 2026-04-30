@@ -1,5 +1,6 @@
 import { API_BASE, refresh } from './authApi.js'
 import { clearAccessToken, getAccessToken, setAccessToken } from '../model/authStore.js'
+import { buildApiUrl } from '../../../shared/api/config.js'
 
 let refreshPromise = null
 
@@ -31,7 +32,7 @@ export async function apiRequest(path, options = {}, retry = true) {
     headers.set('Authorization', `Bearer ${accessToken}`)
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(buildApiUrl(`${API_BASE}${path}`), {
     ...options,
     headers,
     credentials: 'include',
@@ -55,7 +56,7 @@ export async function apiRequest(path, options = {}, retry = true) {
     nextHeaders.set('Authorization', `Bearer ${nextAccessToken}`)
   }
 
-  return fetch(`${API_BASE}${path}`, {
+  return fetch(buildApiUrl(`${API_BASE}${path}`), {
     ...options,
     headers: nextHeaders,
     credentials: 'include',

@@ -1,0 +1,5 @@
+export const API_ROOT = process.env.REACT_APP_API_URL ?? ''
+
+export function buildApiUrl(path) {
+  return `${API_ROOT}${path}`
+}

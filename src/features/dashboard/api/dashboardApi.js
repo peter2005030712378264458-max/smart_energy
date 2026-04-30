@@ -1,5 +1,6 @@
 import { refreshAccessToken } from '../../auth/api/authClient.js'
 import { clearAccessToken, getAccessToken } from '../../auth/model/authStore.js'
+import { buildApiUrl } from '../../../shared/api/config.js'
 
 const DASHBOARD_API_BASE = '/api/consumption/dashboard'
 
@@ -26,7 +27,7 @@ async function dashboardRequest(path, options = {}, retry = true) {
     headers.set('Authorization', `Bearer ${accessToken}`)
   }
 
-  const response = await fetch(`${DASHBOARD_API_BASE}${path}`, {
+  const response = await fetch(buildApiUrl(`${DASHBOARD_API_BASE}${path}`), {
     ...options,
     headers,
     credentials: 'include',
