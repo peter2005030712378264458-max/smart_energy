@@ -1,4 +1,4 @@
-export const API_ROOT = process.env.REACT_APP_API_URL ?? ''
+export const API_ROOT = import.meta.env.VITE_API_URL ?? '/api'
 
 export function buildApiUrl(path) {
   return `${API_ROOT}${path}`

@@ -1,6 +1,6 @@
 import { buildApiUrl } from '../../../shared/api/config.js'
 
-export const API_BASE = '/api/auth'
+export const API_BASE = '/auth'
 
 export async function login(payload) {
   return fetch(buildApiUrl(`${API_BASE}/login/`), {

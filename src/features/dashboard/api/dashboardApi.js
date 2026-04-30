@@ -2,7 +2,7 @@ import { refreshAccessToken } from '../../auth/api/authClient.js'
 import { clearAccessToken, getAccessToken } from '../../auth/model/authStore.js'
 import { buildApiUrl } from '../../../shared/api/config.js'
 
-const DASHBOARD_API_BASE = '/api/consumption/dashboard'
+const DASHBOARD_API_BASE = '/consumption/dashboard'
 
 function buildQuery(params = {}) {
   const query = new URLSearchParams()
