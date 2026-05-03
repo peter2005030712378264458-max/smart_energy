@@ -434,7 +434,7 @@ function DashboardPage({ currentUser, onLogout }) {
   const [selectedDataName, setSelectedDataName] = useState('all')
   const [selectedRoom, setSelectedRoom] = useState('all')
   const [selectedConsumerClass, setSelectedConsumerClass] = useState('all')
-  const [period, setPeriod] = useState('all')
+  const [period, setPeriod] = useState('24h')
   const [selectedDate, setSelectedDate] = useState('')
   const [hoverPoint, setHoverPoint] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -465,6 +465,9 @@ function DashboardPage({ currentUser, onLogout }) {
     selectedDataName === 'all'
       ? 'Все счетчики'
       : filters?.devices.find((device) => device.data_name === selectedDataName)?.label ?? selectedDataName
+  const unavailableFilters = filters?.unavailable_filters ?? {}
+  const unavailableRelations = deviceDetail?.unavailable_relations ?? filters?.unavailable_relations ?? {}
+  const isConsumerClassUnavailable = Boolean(unavailableFilters.consumer_class)
 
   useEffect(() => {
     let active = true
@@ -475,6 +478,11 @@ function DashboardPage({ currentUser, onLogout }) {
         if (active) {
           setFilters(nextFilters)
           setSelectedDate(nextFilters.date_range?.date_to?.slice(0, 10) ?? '')
+          setSelectedDataName((current) => (
+            current === 'all'
+              ? nextFilters.default_data_name ?? nextFilters.devices?.[0]?.data_name ?? 'all'
+              : current
+          ))
           setError('')
         }
       } catch (requestError) {
@@ -501,12 +509,23 @@ function DashboardPage({ currentUser, onLogout }) {
     async function loadDashboardData() {
       setLoading(true)
       try {
-        const [nextSummary, nextTimeseries, nextTopDevices, nextRoomLoads] = await Promise.all([
-          getDashboardSummary(queryParams),
-          getDashboardTimeseries({ ...queryParams, metric: 'active_power_w_avg' }),
-          getTopDevices(queryParams),
-          getRoomLoads(queryParams),
-        ])
+        const nextSummary = await getDashboardSummary(queryParams)
+        const nextTimeseries = await getDashboardTimeseries({ ...queryParams, metric: 'active_power_w_avg' })
+        let nextTopDevices = []
+        let nextRoomLoads = []
+
+        try {
+          nextTopDevices = await getTopDevices(queryParams)
+        } catch (topDevicesError) {
+          console.warn('Не удалось загрузить топ счетчиков', topDevicesError)
+        }
+
+        try {
+          nextRoomLoads = await getRoomLoads(queryParams)
+        } catch (roomLoadsError) {
+          console.warn('Не удалось загрузить помещения', roomLoadsError)
+        }
+
         const nextDeviceDetail =
           selectedDataName !== 'all'
             ? await getDeviceDetail(selectedDataName, queryParams)
@@ -682,7 +701,10 @@ function DashboardPage({ currentUser, onLogout }) {
                   </select>
                 </label>
 
-                <label className="energy-control">
+                <label
+                  className={`energy-control ${isConsumerClassUnavailable ? 'energy-control--unavailable' : ''}`}
+                  title={unavailableFilters.consumer_class ?? undefined}
+                >
                   <span>Класс</span>
                   <select
                     value={selectedConsumerClass}
@@ -690,9 +712,11 @@ function DashboardPage({ currentUser, onLogout }) {
                       setSelectedConsumerClass(event.target.value)
                       setSelectedDataName('all')
                     }}
-                    disabled={!filters || selectedDataName !== 'all'}
+                    disabled={!filters || selectedDataName !== 'all' || isConsumerClassUnavailable}
                   >
-                    <option value="all">Все классы</option>
+                    <option value="all">
+                      {isConsumerClassUnavailable ? 'Недоступно в новой БД' : 'Все классы'}
+                    </option>
                     {filters?.consumer_classes.map((item) => (
                       <option value={item.consumer_class} key={item.consumer_class}>
                         {item.consumer_class}
@@ -999,13 +1023,17 @@ function DashboardPage({ currentUser, onLogout }) {
                   </div>
 
                   <div className="energy-table">
-                    {(deviceDetail?.consumers ?? []).map((consumer, index) => (
-                      <div className="energy-table__row" key={`${consumer.power_consumer}-${index}`}>
-                        <span>{consumer.power_consumer}</span>
-                        <strong>{consumer.consumer_class}</strong>
-                        <em>{consumer.room}</em>
-                      </div>
-                    ))}
+                    {unavailableRelations.consumers ? (
+                      <div className="energy-empty-state">{unavailableRelations.consumers}</div>
+                    ) : (
+                      (deviceDetail?.consumers ?? []).map((consumer, index) => (
+                        <div className="energy-table__row" key={`${consumer.power_consumer}-${index}`}>
+                          <span>{consumer.power_consumer}</span>
+                          <strong>{consumer.consumer_class}</strong>
+                          <em>{consumer.room}</em>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </article>
 
@@ -1018,13 +1046,17 @@ function DashboardPage({ currentUser, onLogout }) {
                   </div>
 
                   <div className="energy-table">
-                    {(deviceDetail?.breakers ?? []).map((breaker, index) => (
-                      <div className="energy-table__row" key={`${breaker.breaker}-${index}`}>
-                        <span>{breaker.breaker}</span>
-                        <strong>{breaker.room}</strong>
-                        <em>{[breaker.floor, breaker.building].filter(Boolean).join(' · ')}</em>
-                      </div>
-                    ))}
+                    {unavailableRelations.breakers ? (
+                      <div className="energy-empty-state">{unavailableRelations.breakers}</div>
+                    ) : (
+                      (deviceDetail?.breakers ?? []).map((breaker, index) => (
+                        <div className="energy-table__row" key={`${breaker.breaker}-${index}`}>
+                          <span>{breaker.breaker}</span>
+                          <strong>{breaker.room}</strong>
+                          <em>{[breaker.floor, breaker.building].filter(Boolean).join(' · ')}</em>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </article>
               </section>

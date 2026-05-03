@@ -298,6 +298,17 @@
   font: inherit;
 }
 
+.energy-control--unavailable span {
+  color: rgba(255, 113, 131, 0.92);
+}
+
+.energy-control--unavailable select {
+  color: rgba(255, 210, 216, 0.86);
+  background: rgba(255, 113, 131, 0.14);
+  border-color: rgba(255, 113, 131, 0.36);
+  cursor: not-allowed;
+}
+
 .energy-control--wide select {
   width: min(360px, 58vw);
 }
@@ -724,6 +735,14 @@
   color: var(--energy-text-secondary);
   font-style: normal;
   font-size: 0.9rem;
+}
+
+.energy-empty-state {
+  padding: 16px;
+  border-radius: 14px;
+  color: rgba(255, 210, 216, 0.92);
+  background: rgba(255, 113, 131, 0.12);
+  border: 1px solid rgba(255, 113, 131, 0.28);
 }
 
 .energy-map-actions {
