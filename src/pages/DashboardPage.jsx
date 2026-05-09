@@ -36,6 +36,11 @@ function formatPercent(value, digits = 0) {
   return `${formatNumber(value, digits)}%`
 }
 
+function textOrFallback(value, fallback = '-') {
+  const text = String(value ?? '').trim()
+  return text || fallback
+}
+
 function formatDateTime(value) {
   if (!value) {
     return 'нет данных'
@@ -137,6 +142,27 @@ function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumer
     consumer_class: selectedConsumerClass,
     ...getPeriodParams(period, dateRange, selectedDate),
   }
+}
+
+function normalizeFilters(filters = {}) {
+  return {
+    date_range: filters.date_range ?? null,
+    devices: filters.devices ?? [],
+    rooms: filters.rooms ?? [],
+    consumer_classes: filters.consumer_classes ?? [],
+    buildings: filters.buildings ?? [],
+    floors: filters.floors ?? [],
+    locations: filters.locations ?? [],
+    metrics: filters.metrics ?? [],
+  }
+}
+
+function getDeviceLabel(device, fallback = '-') {
+  return textOrFallback(device?.label ?? device?.data_name, fallback)
+}
+
+function getRoomLabel(room) {
+  return textOrFallback(room?.room)
 }
 
 function normalizeChartValue(point) {
@@ -464,7 +490,7 @@ function DashboardPage({ currentUser, onLogout }) {
   const selectedDeviceLabel =
     selectedDataName === 'all'
       ? 'Все счетчики'
-      : filters?.devices.find((device) => device.data_name === selectedDataName)?.label ?? selectedDataName
+      : getDeviceLabel(filters?.devices.find((device) => device.data_name === selectedDataName), selectedDataName)
 
   useEffect(() => {
     let active = true
@@ -473,7 +499,7 @@ function DashboardPage({ currentUser, onLogout }) {
       try {
         const nextFilters = await getDashboardFilters()
         if (active) {
-          setFilters(nextFilters)
+          setFilters(normalizeFilters(nextFilters))
           setSelectedDate(nextFilters.date_range?.date_to?.slice(0, 10) ?? '')
           setError('')
         }
@@ -515,8 +541,8 @@ function DashboardPage({ currentUser, onLogout }) {
         if (active) {
           setSummary(nextSummary)
           setTimeseries(nextTimeseries.points ?? [])
-          setTopDevices(nextTopDevices)
-          setRoomLoads(nextRoomLoads)
+          setTopDevices(nextTopDevices ?? [])
+          setRoomLoads(nextRoomLoads ?? [])
           setDeviceDetail(nextDeviceDetail)
           setError('')
         }
@@ -657,7 +683,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <option value="all">Все счетчики</option>
                     {filters?.devices.map((device) => (
                       <option value={device.data_name} key={device.data_name}>
-                        {device.label}
+                        {getDeviceLabel(device)}
                       </option>
                     ))}
                   </select>
@@ -676,7 +702,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <option value="all">Все помещения</option>
                     {filters?.rooms.map((room) => (
                       <option value={room.room} key={room.room}>
-                        {room.room}
+                        {getRoomLabel(room)}
                       </option>
                     ))}
                   </select>
@@ -695,7 +721,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <option value="all">Все классы</option>
                     {filters?.consumer_classes.map((item) => (
                       <option value={item.consumer_class} key={item.consumer_class}>
-                        {item.consumer_class}
+                        {textOrFallback(item.consumer_class)}
                       </option>
                     ))}
                   </select>
@@ -824,7 +850,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <article className="energy-event-item" key={device.data_name}>
                       <div className="energy-event-item__time">#{index + 1}</div>
                       <div className="energy-event-item__body">
-                        <div className="energy-event-item__title">{device.label}</div>
+                        <div className="energy-event-item__title">{getDeviceLabel(device)}</div>
                         <div className="energy-event-item__text">
                           {formatNumber(device.energy_kwh, 0)} кВт·ч · максимум {formatNumber(device.max_power_kw)} кВт
                         </div>
@@ -847,7 +873,7 @@ function DashboardPage({ currentUser, onLogout }) {
                 <div className="energy-bar-chart">
                   {roomLoads.map((room) => (
                     <div className="energy-bar-row" key={room.room}>
-                      <div className="energy-bar-row__label">{room.room}</div>
+                      <div className="energy-bar-row__label">{getRoomLabel(room)}</div>
                       <div className="energy-bar-row__track">
                         <span
                           className="energy-bar-row__fill"
@@ -924,7 +950,7 @@ function DashboardPage({ currentUser, onLogout }) {
                   <div className="energy-summary-item">
                     <span className="energy-summary-item__label">Самый энергоемкий счетчик</span>
                     <strong className="energy-summary-item__value">
-                      {topDevices[0]?.label ?? 'нет данных'}
+                      {topDevices[0] ? getDeviceLabel(topDevices[0]) : 'нет данных'}
                     </strong>
                     <span className="energy-summary-item__note">
                       {formatNumber(topDevices[0]?.energy_kwh, 0)} кВт·ч
@@ -971,7 +997,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <option value="all">Выберите счетчик</option>
                     {filters?.devices.map((device) => (
                       <option value={device.data_name} key={device.data_name}>
-                        {device.label}
+                        {getDeviceLabel(device)}
                       </option>
                     ))}
                   </select>
@@ -1000,10 +1026,10 @@ function DashboardPage({ currentUser, onLogout }) {
 
                   <div className="energy-table">
                     {(deviceDetail?.consumers ?? []).map((consumer, index) => (
-                      <div className="energy-table__row" key={`${consumer.power_consumer}-${index}`}>
-                        <span>{consumer.power_consumer}</span>
-                        <strong>{consumer.consumer_class}</strong>
-                        <em>{consumer.room}</em>
+                      <div className="energy-table__row" key={`${consumer.power_consumer ?? consumer.consumer_class}-${index}`}>
+                        <span>{textOrFallback(consumer.power_consumer)}</span>
+                        <strong>{textOrFallback(consumer.consumer_class)}</strong>
+                        <em>{textOrFallback(consumer.room)}</em>
                       </div>
                     ))}
                   </div>
@@ -1019,10 +1045,10 @@ function DashboardPage({ currentUser, onLogout }) {
 
                   <div className="energy-table">
                     {(deviceDetail?.breakers ?? []).map((breaker, index) => (
-                      <div className="energy-table__row" key={`${breaker.breaker}-${index}`}>
-                        <span>{breaker.breaker}</span>
-                        <strong>{breaker.room}</strong>
-                        <em>{[breaker.floor, breaker.building].filter(Boolean).join(' · ')}</em>
+                      <div className="energy-table__row" key={`${breaker.breaker ?? breaker.room}-${index}`}>
+                        <span>{textOrFallback(breaker.breaker)}</span>
+                        <strong>{textOrFallback(breaker.room)}</strong>
+                        <em>{textOrFallback([breaker.floor, breaker.building].filter(Boolean).join(' · '))}</em>
                       </div>
                     ))}
                   </div>
