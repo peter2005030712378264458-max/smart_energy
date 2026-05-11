@@ -431,6 +431,49 @@ function drawLineChart(canvas, series, hoverPoint = null) {
   }
 }
 
+function buildSummaryFromTimeseries(points, filters, queryParams) {
+  const values = points
+    .map((point) => Number(point.value ?? 0))
+    .filter((value) => Number.isFinite(value))
+
+  if (values.length === 0) {
+    return {
+      points: 0,
+      devices_count: 0,
+      date_from: queryParams.from ?? filters?.date_range?.date_from ?? null,
+      date_to: queryParams.to ?? filters?.date_range?.date_to ?? null,
+      total_energy_kwh: 0,
+      avg_power_kw: 0,
+      max_power_kw: 0,
+      avg_voltage_v: 0,
+      avg_frequency_hz: 0,
+      current_power_kw: 0,
+      timestamp_iso: queryParams.to ?? filters?.date_range?.date_to ?? null,
+    }
+  }
+
+  const sum = values.reduce((total, value) => total + value, 0)
+  const max = Math.max(...values)
+
+  return {
+    points: points.length,
+    devices_count: filters?.devices?.length ?? 0,
+    date_from: points[0]?.timestamp ?? queryParams.from ?? filters?.date_range?.date_from ?? null,
+    date_to: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
+    total_energy_kwh: sum / 60000,
+    avg_power_kw: sum / values.length / 1000,
+    max_power_kw: max / 1000,
+    avg_voltage_v: 0,
+    avg_frequency_hz: 0,
+    current_power_kw: values.at(-1) / 1000,
+    timestamp_iso: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
+  }
+}
+
+function isGlobalSelection({ selectedDataName, selectedRoom, selectedConsumerClass }) {
+  return selectedDataName === 'all' && selectedRoom === 'all' && selectedConsumerClass === 'all'
+}
+
 function SidebarIcon({ id }) {
   if (id === 'links') {
     return (
@@ -483,6 +526,7 @@ function DashboardPage({ currentUser, onLogout }) {
       }),
     [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom]
   )
+  const globalSelection = isGlobalSelection({ selectedDataName, selectedRoom, selectedConsumerClass })
 
   const chartSeries = useMemo(() => buildChartSeries(timeseries), [timeseries])
   const powerStats = useMemo(() => buildPowerStats(timeseries, summary), [summary, timeseries])
@@ -531,12 +575,19 @@ function DashboardPage({ currentUser, onLogout }) {
     async function loadDashboardData() {
       setLoading(true)
       try {
-        const [nextSummary, nextTimeseries, nextTopDevices, nextRoomLoads] = await Promise.all([
-          getDashboardSummary(queryParams),
+        const [summaryResult, timeseriesResult, topDevicesResult, roomLoadsResult] = await Promise.allSettled([
+          globalSelection ? Promise.resolve(null) : getDashboardSummary(queryParams),
           getDashboardTimeseries({ ...queryParams, metric: 'active_power_w_avg' }),
           getTopDevices(queryParams),
-          getRoomLoads(queryParams),
+          globalSelection ? Promise.resolve([]) : getRoomLoads(queryParams),
         ])
+        const nextTimeseries = timeseriesResult.status === 'fulfilled' ? timeseriesResult.value : { points: [] }
+        const nextTopDevices = topDevicesResult.status === 'fulfilled' ? topDevicesResult.value : []
+        const nextRoomLoads = roomLoadsResult.status === 'fulfilled' ? roomLoadsResult.value : []
+        const nextSummary =
+          summaryResult.status === 'fulfilled' && summaryResult.value
+            ? summaryResult.value
+            : buildSummaryFromTimeseries(nextTimeseries.points ?? [], filters, queryParams)
         const nextDeviceDetail =
           selectedDataName !== 'all'
             ? await getDeviceDetail(selectedDataName, queryParams)
@@ -548,7 +599,8 @@ function DashboardPage({ currentUser, onLogout }) {
           setTopDevices(nextTopDevices ?? [])
           setRoomLoads(nextRoomLoads ?? [])
           setDeviceDetail(nextDeviceDetail)
-          setError('')
+          const failedRequiredRequest = timeseriesResult.status === 'rejected' || topDevicesResult.status === 'rejected'
+          setError(failedRequiredRequest ? 'Не удалось загрузить часть данных дашборда' : '')
         }
       } catch (requestError) {
         if (active) {
@@ -566,7 +618,7 @@ function DashboardPage({ currentUser, onLogout }) {
     return () => {
       active = false
     }
-  }, [filters, queryParams, selectedDataName])
+  }, [filters, globalSelection, queryParams, selectedDataName])
 
   useEffect(() => {
     setHoverPoint(null)
