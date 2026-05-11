@@ -135,11 +135,24 @@ function getPeriodParams(period, dateRange, selectedDate) {
   }
 }
 
+function getAggregationGranularity(period) {
+  if (period === '24h') {
+    return 'hour'
+  }
+
+  if (period === '7d') {
+    return 'day'
+  }
+
+  return 'week'
+}
+
 function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumerClass, period, dateRange, selectedDate }) {
   return {
     data_name: selectedDataName,
     room: selectedRoom,
     consumer_class: selectedConsumerClass,
+    granularity: getAggregationGranularity(period),
     ...getPeriodParams(period, dateRange, selectedDate),
   }
 }
@@ -166,7 +179,7 @@ function getRoomLabel(room) {
 }
 
 function normalizeChartValue(point) {
-  return Number(point.value ?? 0) / 1000
+  return Number(point.value ?? 0)
 }
 
 function buildPowerStats(points, summary) {
@@ -435,6 +448,10 @@ function buildSummaryFromTimeseries(points, filters, queryParams) {
   const values = points
     .map((point) => Number(point.value ?? 0))
     .filter((value) => Number.isFinite(value))
+  const totalEnergy = points.reduce((total, point) => {
+    const energy = Number(point.energy_kwh ?? 0)
+    return Number.isFinite(energy) ? total + energy : total
+  }, 0)
 
   if (values.length === 0) {
     return {
@@ -460,12 +477,12 @@ function buildSummaryFromTimeseries(points, filters, queryParams) {
     devices_count: filters?.devices?.length ?? 0,
     date_from: points[0]?.timestamp ?? queryParams.from ?? filters?.date_range?.date_from ?? null,
     date_to: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
-    total_energy_kwh: sum / 60000,
-    avg_power_kw: sum / values.length / 1000,
-    max_power_kw: max / 1000,
+    total_energy_kwh: totalEnergy,
+    avg_power_kw: sum / values.length,
+    max_power_kw: max,
     avg_voltage_v: 0,
     avg_frequency_hz: 0,
-    current_power_kw: values.at(-1) / 1000,
+    current_power_kw: values.at(-1),
     timestamp_iso: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
   }
 }
@@ -862,7 +879,7 @@ function DashboardPage({ currentUser, onLogout }) {
                 <div className="energy-panel__head">
                   <div>
                     <h2>Динамика активной мощности</h2>
-                    <p>Минутные агрегаты `active_power_w_avg`, сумма по выбранной группе</p>
+                    <p>Почасовая, посуточная или понедельная агрегация по выбранному периоду</p>
                   </div>
                   <div className="energy-legend">
                     <span><i className="actual" />Факт</span>
