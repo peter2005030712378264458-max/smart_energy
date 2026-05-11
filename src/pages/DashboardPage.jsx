@@ -460,7 +460,7 @@ function DashboardPage({ currentUser, onLogout }) {
   const [selectedDataName, setSelectedDataName] = useState('all')
   const [selectedRoom, setSelectedRoom] = useState('all')
   const [selectedConsumerClass, setSelectedConsumerClass] = useState('all')
-  const [period, setPeriod] = useState('all')
+  const [period, setPeriod] = useState('24h')
   const [selectedDate, setSelectedDate] = useState('')
   const [hoverPoint, setHoverPoint] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -519,6 +519,10 @@ function DashboardPage({ currentUser, onLogout }) {
 
   useEffect(() => {
     if (!filters) {
+      return undefined
+    }
+
+    if (period !== 'all' && !selectedDate) {
       return undefined
     }
 
