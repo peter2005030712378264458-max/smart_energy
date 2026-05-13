@@ -22,6 +22,8 @@ const PERIOD_OPTIONS = [
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const CHART_PADDING = { top: 18, right: 22, bottom: 54, left: 56 }
+const DASHBOARD_TIME_ZONE = 'Europe/Moscow'
+const DASHBOARD_TIME_OFFSET = '+03:00'
 
 function formatNumber(value, digits = 1) {
   const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0
@@ -77,13 +79,39 @@ function toUtcDateKey(date) {
   return date.toISOString().slice(0, 10)
 }
 
+function getDateKeyInDashboardTimeZone(value) {
+  if (!value) {
+    return ''
+  }
+
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: DASHBOARD_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(value))
+  const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]))
+
+  return `${partMap.year}-${partMap.month}-${partMap.day}`
+}
+
+function dateKeyToUtcDate(dateKey) {
+  return new Date(`${dateKey}T00:00:00Z`)
+}
+
+function addDaysToDateKey(dateKey, days) {
+  return toUtcDateKey(new Date(dateKeyToUtcDate(dateKey).getTime() + days * DAY_MS))
+}
+
 function buildAvailableDates(dateRange) {
   if (!dateRange?.date_from || !dateRange?.date_to) {
     return []
   }
 
-  const start = new Date(`${dateRange.date_from.slice(0, 10)}T00:00:00Z`)
-  const end = new Date(`${dateRange.date_to.slice(0, 10)}T00:00:00Z`)
+  const startKey = getDateKeyInDashboardTimeZone(dateRange.date_from)
+  const endKey = getDateKeyInDashboardTimeZone(dateRange.date_to)
+  const start = dateKeyToUtcDate(startKey)
+  const end = dateKeyToUtcDate(endKey)
   const dates = []
 
   for (let current = start; current <= end; current = new Date(current.getTime() + 24 * 60 * 60 * 1000)) {
@@ -102,7 +130,8 @@ function formatDateLabel(dateKey) {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
-  }).format(new Date(`${dateKey}T00:00:00Z`))
+    timeZone: DASHBOARD_TIME_ZONE,
+  }).format(new Date(`${dateKey}T00:00:00${DASHBOARD_TIME_OFFSET}`))
 }
 
 function getPeriodParams(period, dateRange, selectedDate) {
@@ -113,25 +142,24 @@ function getPeriodParams(period, dateRange, selectedDate) {
   }
 
   const availableDates = buildAvailableDates(dateRange)
-  const fallbackDate = availableDates.at(-1) ?? dateRange.date_to.slice(0, 10)
+  const fallbackDate = availableDates.at(-1) ?? getDateKeyInDashboardTimeZone(dateRange.date_to)
   const dateKey = availableDates.includes(selectedDate) ? selectedDate : fallbackDate
-  const selectedDayStart = new Date(`${dateKey}T00:00:00Z`)
 
   if (period === '24h') {
     return {
-      from: `${dateKey}T00:00:00Z`,
-      to: `${dateKey}T23:59:59Z`,
+      from: `${dateKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
+      to: `${dateKey}T23:59:59${DASHBOARD_TIME_OFFSET}`,
     }
   }
 
   const days = Math.max(1, Math.round(periodOption.hours / 24))
-  const dateFrom = new Date(selectedDayStart.getTime() - (days - 1) * DAY_MS)
-  const minDate = new Date(`${dateRange.date_from.slice(0, 10)}T00:00:00Z`)
-  const clampedDateFrom = dateFrom < minDate ? minDate : dateFrom
+  const dateFromKey = addDaysToDateKey(dateKey, -(days - 1))
+  const minDateKey = getDateKeyInDashboardTimeZone(dateRange.date_from)
+  const clampedDateFromKey = dateFromKey < minDateKey ? minDateKey : dateFromKey
 
   return {
-    from: `${toUtcDateKey(clampedDateFrom)}T00:00:00Z`,
-    to: `${dateKey}T23:59:59Z`,
+    from: `${clampedDateFromKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
+    to: `${dateKey}T23:59:59${DASHBOARD_TIME_OFFSET}`,
   }
 }
 
