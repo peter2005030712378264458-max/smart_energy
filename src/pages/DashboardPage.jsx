@@ -54,6 +54,7 @@ function formatDateTime(value) {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: DASHBOARD_TIME_ZONE,
   }).format(new Date(value))
 }
 
@@ -251,7 +252,25 @@ function buildPowerStats(points, summary) {
   }
 }
 
-function buildChartSeries(points) {
+function formatChartLabel(value, granularity) {
+  const date = new Date(value)
+
+  if (granularity === 'hour') {
+    return new Intl.DateTimeFormat('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: DASHBOARD_TIME_ZONE,
+    }).format(date)
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: DASHBOARD_TIME_ZONE,
+  }).format(date)
+}
+
+function buildChartSeries(points, granularity) {
   const source = points.length > 0 ? points : []
   const maxItems = 32
   const step = Math.max(1, Math.ceil(source.length / maxItems))
@@ -262,14 +281,7 @@ function buildChartSeries(points) {
   const threshold = average * 1.25
 
   return {
-    labels: sampled.map((point) =>
-      new Intl.DateTimeFormat('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-      }).format(new Date(point.timestamp))
-    ),
+    labels: sampled.map((point) => formatChartLabel(point.timestamp, granularity)),
     points: sampled.map((point, index) => ({
       timestamp: point.timestamp,
       value: actual[index],
@@ -403,7 +415,7 @@ function drawLineChart(canvas, series, hoverPoint = null) {
   }
 
   context.textAlign = 'center'
-  const labelStep = Math.max(1, Math.ceil(series.labels.length / 6))
+  const labelStep = Math.max(1, Math.ceil(series.labels.length / 8))
   series.labels.forEach((label, index) => {
     if (index % labelStep === 0) {
       context.fillText(label, toX(index), height - 18)
@@ -573,7 +585,7 @@ function DashboardPage({ currentUser, onLogout }) {
   )
   const globalSelection = isGlobalSelection({ selectedDataName, selectedRoom, selectedConsumerClass })
 
-  const chartSeries = useMemo(() => buildChartSeries(timeseries), [timeseries])
+  const chartSeries = useMemo(() => buildChartSeries(timeseries, queryParams.granularity), [queryParams.granularity, timeseries])
   const powerStats = useMemo(() => buildPowerStats(timeseries, summary), [summary, timeseries])
   const maxRoomEnergy = Math.max(...roomLoads.map((room) => room.energy_kwh || 0), 1)
   const selectedDeviceLabel =
