@@ -656,6 +656,12 @@
   box-shadow: 0 0 18px rgba(255, 113, 131, 0.25);
 }
 
+.energy-bar-empty {
+  color: var(--energy-text-secondary);
+  font-size: 0.92rem;
+  padding: 14px 0;
+}
+
 .energy-summary-list {
   display: grid;
   gap: 12px;

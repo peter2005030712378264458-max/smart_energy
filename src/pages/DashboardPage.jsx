@@ -527,10 +527,6 @@ function buildSummaryFromTimeseries(points, filters, queryParams) {
   }
 }
 
-function isGlobalSelection({ selectedDataName, selectedRoom, selectedConsumerClass }) {
-  return selectedDataName === 'all' && selectedRoom === 'all' && selectedConsumerClass === 'all'
-}
-
 function SidebarIcon({ id }) {
   if (id === 'links') {
     return (
@@ -583,8 +579,6 @@ function DashboardPage({ currentUser, onLogout }) {
       }),
     [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom]
   )
-  const globalSelection = isGlobalSelection({ selectedDataName, selectedRoom, selectedConsumerClass })
-
   const chartSeries = useMemo(() => buildChartSeries(timeseries, queryParams.granularity), [queryParams.granularity, timeseries])
   const powerStats = useMemo(() => buildPowerStats(timeseries, summary), [summary, timeseries])
   const maxRoomEnergy = Math.max(...roomLoads.map((room) => room.energy_kwh || 0), 1)
@@ -633,10 +627,10 @@ function DashboardPage({ currentUser, onLogout }) {
       setLoading(true)
       try {
         const [summaryResult, timeseriesResult, topDevicesResult, roomLoadsResult] = await Promise.allSettled([
-          globalSelection ? Promise.resolve(null) : getDashboardSummary(queryParams),
+          getDashboardSummary(queryParams),
           getDashboardTimeseries({ ...queryParams, metric: 'active_power_w_avg' }),
           getTopDevices(queryParams),
-          globalSelection ? Promise.resolve([]) : getRoomLoads(queryParams),
+          getRoomLoads(queryParams),
         ])
         const nextTimeseries = timeseriesResult.status === 'fulfilled' ? timeseriesResult.value : { points: [] }
         const nextTopDevices = topDevicesResult.status === 'fulfilled' ? topDevicesResult.value : []
@@ -675,7 +669,7 @@ function DashboardPage({ currentUser, onLogout }) {
     return () => {
       active = false
     }
-  }, [filters, globalSelection, queryParams, selectedDataName])
+  }, [filters, period, queryParams, selectedDataName, selectedDate])
 
   useEffect(() => {
     setHoverPoint(null)
@@ -984,22 +978,26 @@ function DashboardPage({ currentUser, onLogout }) {
                 </div>
 
                 <div className="energy-bar-chart">
-                  {roomLoads.map((room) => (
-                    <div className="energy-bar-row" key={room.room}>
-                      <div className="energy-bar-row__label">{getRoomLabel(room)}</div>
-                      <div className="energy-bar-row__track">
-                        <span
-                          className="energy-bar-row__fill"
-                          style={{
-                            width: `${((room.energy_kwh || 0) / maxRoomEnergy) * 100}%`,
-                          }}
-                        />
+                  {roomLoads.length > 0 ? (
+                    roomLoads.map((room) => (
+                      <div className="energy-bar-row" key={room.room}>
+                        <div className="energy-bar-row__label">{getRoomLabel(room)}</div>
+                        <div className="energy-bar-row__track">
+                          <span
+                            className="energy-bar-row__fill"
+                            style={{
+                              width: `${((room.energy_kwh || 0) / maxRoomEnergy) * 100}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="energy-bar-row__value">
+                          {formatNumber(room.energy_kwh, 0)} кВт·ч
+                        </div>
                       </div>
-                      <div className="energy-bar-row__value">
-                        {formatNumber(room.energy_kwh, 0)} кВт·ч
-                      </div>
-                    </div>
-                  ))}
+                    ))
+                  ) : (
+                    <div className="energy-bar-empty">Нет агрегированных данных за выбранный период</div>
+                  )}
                 </div>
               </article>
 
@@ -1085,7 +1083,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <strong className="energy-summary-item__value">
                       {formatNumber(summary?.points, 0)}
                     </strong>
-                    <span className="energy-summary-item__note">сырые минутные записи счетчиков в базе</span>
+                    <span className="energy-summary-item__note">агрегированные записи счетчиков</span>
                   </div>
                 </div>
               </article>
