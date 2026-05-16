@@ -7,11 +7,13 @@ import {
   getRoomLoads,
   getTopDevices,
 } from '../features/dashboard/api/dashboardApi.js'
+import { getPeriodComparison } from '../features/analytics/api/analyticsApi.js'
 import '../dashboard.css'
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Дашборд' },
   { id: 'links', label: 'Связи' },
+  { id: 'analytics', label: 'Аналитика' },
 ]
 
 const PERIOD_OPTIONS = [
@@ -184,6 +186,36 @@ function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumer
     granularity: getAggregationGranularity(period),
     ...getPeriodParams(period, dateRange, selectedDate),
   }
+}
+
+function buildDefaultAnalyticsPeriods(availableDates) {
+  if (availableDates.length < 14) {
+    return null
+  }
+
+  return {
+    period1From: availableDates[0],
+    period1To: availableDates[6],
+    period2From: availableDates.at(-7),
+    period2To: availableDates.at(-1),
+  }
+}
+
+function validateAnalyticsPeriods({ period1From, period1To, period2From, period2To }) {
+  if (!period1From || !period1To || !period2From || !period2To) {
+    return 'Заполните оба периода'
+  }
+  if (period1From > period1To) {
+    return 'В первом периоде дата начала позже даты конца'
+  }
+  if (period2From > period2To) {
+    return 'Во втором периоде дата начала позже даты конца'
+  }
+  if (!(period1To < period2From || period2To < period1From)) {
+    return 'Периоды не должны пересекаться'
+  }
+
+  return ''
 }
 
 function normalizeFilters(filters = {}) {
@@ -528,6 +560,16 @@ function buildSummaryFromTimeseries(points, filters, queryParams) {
 }
 
 function SidebarIcon({ id }) {
+  if (id === 'analytics') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 19h16" />
+        <path d="M6 16l4-5 4 3 4-7" />
+        <path d="M18 7h-4M18 7v4" />
+      </svg>
+    )
+  }
+
   if (id === 'links') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -559,6 +601,14 @@ function DashboardPage({ currentUser, onLogout }) {
   const [period, setPeriod] = useState('24h')
   const [selectedDate, setSelectedDate] = useState('')
   const [hoverPoint, setHoverPoint] = useState(null)
+  const [analyticsPeriod1From, setAnalyticsPeriod1From] = useState('')
+  const [analyticsPeriod1To, setAnalyticsPeriod1To] = useState('')
+  const [analyticsPeriod2From, setAnalyticsPeriod2From] = useState('')
+  const [analyticsPeriod2To, setAnalyticsPeriod2To] = useState('')
+  const [analyticsAlpha, setAnalyticsAlpha] = useState('0.05')
+  const [analyticsResult, setAnalyticsResult] = useState(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsError, setAnalyticsError] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const userName = getUserName(currentUser)
@@ -687,6 +737,22 @@ function DashboardPage({ currentUser, onLogout }) {
   }, [availableDates, period, selectedDate])
 
   useEffect(() => {
+    if (analyticsPeriod1From || analyticsPeriod1To || analyticsPeriod2From || analyticsPeriod2To) {
+      return
+    }
+
+    const defaultPeriods = buildDefaultAnalyticsPeriods(availableDates)
+    if (!defaultPeriods) {
+      return
+    }
+
+    setAnalyticsPeriod1From(defaultPeriods.period1From)
+    setAnalyticsPeriod1To(defaultPeriods.period1To)
+    setAnalyticsPeriod2From(defaultPeriods.period2From)
+    setAnalyticsPeriod2To(defaultPeriods.period2To)
+  }, [analyticsPeriod1From, analyticsPeriod1To, analyticsPeriod2From, analyticsPeriod2To, availableDates])
+
+  useEffect(() => {
     const canvas = canvasRef.current
 
     if (!canvas) {
@@ -721,6 +787,42 @@ function DashboardPage({ currentUser, onLogout }) {
 
   function handleChartPointerLeave() {
     setHoverPoint(null)
+  }
+
+  async function handleAnalyticsCompare(event) {
+    event.preventDefault()
+    const validationError = validateAnalyticsPeriods({
+      period1From: analyticsPeriod1From,
+      period1To: analyticsPeriod1To,
+      period2From: analyticsPeriod2From,
+      period2To: analyticsPeriod2To,
+    })
+
+    if (validationError) {
+      setAnalyticsError(validationError)
+      return
+    }
+
+    setAnalyticsLoading(true)
+    setAnalyticsError('')
+
+    try {
+      const result = await getPeriodComparison({
+        period1_from: analyticsPeriod1From,
+        period1_to: analyticsPeriod1To,
+        period2_from: analyticsPeriod2From,
+        period2_to: analyticsPeriod2To,
+        alpha: analyticsAlpha,
+        data_name: selectedDataName,
+        room: selectedRoom,
+        consumer_class: selectedConsumerClass,
+      })
+      setAnalyticsResult(result)
+    } catch (requestError) {
+      setAnalyticsError(requestError.message)
+    } finally {
+      setAnalyticsLoading(false)
+    }
   }
 
   return (
@@ -1088,6 +1190,243 @@ function DashboardPage({ currentUser, onLogout }) {
                 </div>
               </article>
             </section>
+          </section>
+
+          <section className={activeView === 'analytics' ? 'energy-view active' : 'energy-view'}>
+            <header className="energy-topbar">
+              <div>
+                <h1>Аналитика</h1>
+              </div>
+
+              <div className="energy-toolbar">
+                <label className="energy-control energy-control--wide">
+                  <span>Счетчик</span>
+                  <select
+                    value={selectedDataName}
+                    onChange={(event) => resetDependentFilters(event.target.value)}
+                    disabled={!filters}
+                  >
+                    <option value="all">Все счетчики</option>
+                    {filters?.devices.map((device) => (
+                      <option value={device.data_name} key={device.data_name}>
+                        {getDeviceLabel(device)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="energy-control">
+                  <span>Помещение</span>
+                  <select
+                    value={selectedRoom}
+                    onChange={(event) => {
+                      setSelectedRoom(event.target.value)
+                      setSelectedDataName('all')
+                    }}
+                    disabled={!filters || selectedDataName !== 'all'}
+                  >
+                    <option value="all">Все помещения</option>
+                    {filters?.rooms.map((room) => (
+                      <option value={room.room} key={room.room}>
+                        {getRoomLabel(room)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="energy-control">
+                  <span>Класс</span>
+                  <select
+                    value={selectedConsumerClass}
+                    onChange={(event) => {
+                      setSelectedConsumerClass(event.target.value)
+                      setSelectedDataName('all')
+                    }}
+                    disabled={!filters || selectedDataName !== 'all'}
+                  >
+                    <option value="all">Все классы</option>
+                    {filters?.consumer_classes.map((item) => (
+                      <option value={item.consumer_class} key={item.consumer_class}>
+                        {textOrFallback(item.consumer_class)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </header>
+
+            {analyticsError ? <div className="energy-alert">{analyticsError}</div> : null}
+
+            <form className="energy-panel energy-analysis-form" onSubmit={handleAnalyticsCompare}>
+              <div className="energy-analysis-periods">
+                <fieldset className="energy-analysis-period">
+                  <legend>Первый период</legend>
+                  <label className="energy-control">
+                    <span>Начало</span>
+                    <input
+                      type="date"
+                      value={analyticsPeriod1From}
+                      min={availableDates[0] ?? undefined}
+                      max={availableDates.at(-1) ?? undefined}
+                      onChange={(event) => setAnalyticsPeriod1From(event.target.value)}
+                    />
+                  </label>
+                  <label className="energy-control">
+                    <span>Конец</span>
+                    <input
+                      type="date"
+                      value={analyticsPeriod1To}
+                      min={availableDates[0] ?? undefined}
+                      max={availableDates.at(-1) ?? undefined}
+                      onChange={(event) => setAnalyticsPeriod1To(event.target.value)}
+                    />
+                  </label>
+                </fieldset>
+
+                <fieldset className="energy-analysis-period">
+                  <legend>Второй период</legend>
+                  <label className="energy-control">
+                    <span>Начало</span>
+                    <input
+                      type="date"
+                      value={analyticsPeriod2From}
+                      min={availableDates[0] ?? undefined}
+                      max={availableDates.at(-1) ?? undefined}
+                      onChange={(event) => setAnalyticsPeriod2From(event.target.value)}
+                    />
+                  </label>
+                  <label className="energy-control">
+                    <span>Конец</span>
+                    <input
+                      type="date"
+                      value={analyticsPeriod2To}
+                      min={availableDates[0] ?? undefined}
+                      max={availableDates.at(-1) ?? undefined}
+                      onChange={(event) => setAnalyticsPeriod2To(event.target.value)}
+                    />
+                  </label>
+                </fieldset>
+              </div>
+
+              <div className="energy-analysis-actions">
+                <label className="energy-control">
+                  <span>Уровень значимости</span>
+                  <select value={analyticsAlpha} onChange={(event) => setAnalyticsAlpha(event.target.value)}>
+                    <option value="0.10">0.10</option>
+                    <option value="0.05">0.05</option>
+                    <option value="0.01">0.01</option>
+                  </select>
+                </label>
+
+                <button className="energy-ghost-button" type="submit" disabled={analyticsLoading || !filters}>
+                  {analyticsLoading ? 'Считаем...' : 'Сравнить'}
+                </button>
+              </div>
+            </form>
+
+            {analyticsResult ? (
+              <section className="energy-analysis-result">
+                <section className="energy-kpi-grid">
+                  <article className={analyticsResult.reject_null ? 'energy-kpi-card accent-danger' : 'energy-kpi-card accent-primary'}>
+                    <div className="energy-kpi-card__label">z статистическое</div>
+                    <div className="energy-kpi-card__value">
+                      {formatNumber(analyticsResult.z_statistic, 3)}
+                    </div>
+                    <div className="energy-kpi-card__meta">разность средних / стандартная ошибка</div>
+                  </article>
+
+                  <article className="energy-kpi-card">
+                    <div className="energy-kpi-card__label">z критическое</div>
+                    <div className="energy-kpi-card__value">
+                      {formatNumber(analyticsResult.z_critical, 3)}
+                    </div>
+                    <div className="energy-kpi-card__meta">
+                      таблица: CDF {formatNumber(analyticsResult.table_lookup?.matched_cdf, 5)}
+                    </div>
+                  </article>
+
+                  <article className="energy-kpi-card accent-warning">
+                    <div className="energy-kpi-card__label">Уровень значимости</div>
+                    <div className="energy-kpi-card__value">
+                      {formatNumber(analyticsResult.alpha, 2)}
+                    </div>
+                    <div className="energy-kpi-card__meta">двухсторонний z-тест</div>
+                  </article>
+
+                  <article className={analyticsResult.reject_null ? 'energy-kpi-card accent-danger' : 'energy-kpi-card accent-primary'}>
+                    <div className="energy-kpi-card__label">Решение</div>
+                    <div className="energy-kpi-card__value energy-analysis-decision">
+                      {analyticsResult.reject_null ? 'Отвергаем H0' : 'Не отвергаем H0'}
+                    </div>
+                    <div className="energy-kpi-card__meta">{analyticsResult.hypothesis}</div>
+                  </article>
+                </section>
+
+                <section className="energy-content-grid energy-content-grid--secondary">
+                  {(analyticsResult.periods ?? []).map((periodStats, index) => (
+                    <article className="energy-panel" key={periodStats.key}>
+                      <div className="energy-panel__head compact">
+                        <div>
+                          <h2>{index === 0 ? 'Первый период' : 'Второй период'}</h2>
+                          <p>{formatDateLabel(periodStats.date_from)} - {formatDateLabel(periodStats.date_to)}</p>
+                        </div>
+                      </div>
+
+                      <div className="energy-summary-list">
+                        <div className="energy-summary-item">
+                          <span className="energy-summary-item__label">Средняя мощность</span>
+                          <strong className="energy-summary-item__value">{formatNumber(periodStats.mean_kw, 2)} кВт</strong>
+                          <span className="energy-summary-item__note">часовые агрегаты выбранной выборки</span>
+                        </div>
+                        <div className="energy-summary-item">
+                          <span className="energy-summary-item__label">Энергия за период</span>
+                          <strong className="energy-summary-item__value">{formatNumber(periodStats.total_energy_kwh, 0)} кВт·ч</strong>
+                          <span className="energy-summary-item__note">сумма часовых значений</span>
+                        </div>
+                        <div className="energy-summary-item">
+                          <span className="energy-summary-item__label">Наблюдения</span>
+                          <strong className="energy-summary-item__value">{formatNumber(periodStats.observations, 0)}</strong>
+                          <span className="energy-summary-item__note">исходных точек: {formatNumber(periodStats.source_points, 0)}</span>
+                        </div>
+                        <div className="energy-summary-item">
+                          <span className="energy-summary-item__label">Стандартное отклонение</span>
+                          <strong className="energy-summary-item__value">{formatNumber(periodStats.stddev_kw, 2)} кВт</strong>
+                          <span className="energy-summary-item__note">
+                            фактически: {formatDateTime(periodStats.actual_from)} - {formatDateTime(periodStats.actual_to)}
+                          </span>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </section>
+
+                <article className="energy-panel energy-analysis-conclusion">
+                  <div className="energy-panel__head compact">
+                    <div>
+                      <h2>Вывод</h2>
+                      <p>{analyticsResult.conclusion}</p>
+                    </div>
+                  </div>
+                  <div className="energy-summary-list">
+                    <div className="energy-summary-item">
+                      <span className="energy-summary-item__label">Разность средних</span>
+                      <strong className="energy-summary-item__value">
+                        {formatNumber(analyticsResult.difference_mean_kw, 3)} кВт
+                      </strong>
+                    </div>
+                  </div>
+                </article>
+              </section>
+            ) : (
+              <section className="energy-panel energy-analysis-placeholder">
+                <div className="energy-panel__head compact">
+                  <div>
+                    <h2>Выберите два периода</h2>
+                    <p>После сравнения здесь появятся z-статистика, критическое значение и решение по нулевой гипотезе.</p>
+                  </div>
+                </div>
+              </section>
+            )}
           </section>
 
           <section className={activeView === 'links' ? 'energy-view active' : 'energy-view'}>

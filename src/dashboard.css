@@ -287,7 +287,8 @@
   color: var(--energy-text-secondary);
 }
 
-.energy-control select {
+.energy-control select,
+.energy-control input {
   min-width: 138px;
   background: rgba(10, 24, 49, 0.92);
   color: var(--energy-text);
@@ -296,6 +297,10 @@
   padding: 11px 14px;
   outline: none;
   font: inherit;
+}
+
+.energy-control input {
+  color-scheme: dark;
 }
 
 .energy-control--wide select {
@@ -330,6 +335,11 @@
 .energy-ghost-button:hover,
 .energy-zoom-controls button:hover {
   background: rgba(77, 224, 197, 0.16);
+}
+
+.energy-ghost-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .energy-update-chip {
@@ -692,6 +702,58 @@
   font-size: 0.88rem;
 }
 
+.energy-analysis-form {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.energy-analysis-periods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.energy-analysis-period {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid rgba(142, 177, 219, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.energy-analysis-period legend {
+  padding: 0 8px;
+  color: var(--energy-text);
+  font-weight: 700;
+}
+
+.energy-analysis-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.energy-analysis-result {
+  display: grid;
+  gap: 16px;
+}
+
+.energy-analysis-decision {
+  font-size: 1.45rem;
+  line-height: 1.12;
+}
+
+.energy-analysis-conclusion,
+.energy-analysis-placeholder {
+  margin-top: 16px;
+}
+
 .energy-table {
   display: grid;
   gap: 10px;
@@ -951,6 +1013,10 @@
   .energy-kpi-grid {
     grid-template-columns: 1fr;
   }
+
+  .energy-analysis-periods {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 960px) {
@@ -966,7 +1032,7 @@
   }
 
   .energy-nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .energy-topbar {
@@ -1001,6 +1067,10 @@
   }
 
   .energy-table__row {
+    grid-template-columns: 1fr;
+  }
+
+  .energy-analysis-period {
     grid-template-columns: 1fr;
   }
 }
