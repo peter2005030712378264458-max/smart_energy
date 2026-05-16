@@ -22,6 +22,12 @@ const PERIOD_OPTIONS = [
   { value: '7d', label: '7 дней', hours: 24 * 7 },
 ]
 
+const ANALYTICS_ALTERNATIVE_OPTIONS = [
+  { value: 'two_sided', label: 'Средние не равны' },
+  { value: 'greater', label: 'Первый период больше второго' },
+  { value: 'less', label: 'Первый период меньше второго' },
+]
+
 const DAY_MS = 24 * 60 * 60 * 1000
 const CHART_PADDING = { top: 18, right: 22, bottom: 54, left: 56 }
 const DASHBOARD_TIME_ZONE = 'Europe/Moscow'
@@ -135,6 +141,10 @@ function formatDateLabel(dateKey) {
     year: 'numeric',
     timeZone: DASHBOARD_TIME_ZONE,
   }).format(new Date(`${dateKey}T00:00:00${DASHBOARD_TIME_OFFSET}`))
+}
+
+function getAnalyticsTestLabel(alternative) {
+  return alternative === 'two_sided' ? 'двухсторонний z-тест' : 'односторонний z-тест'
 }
 
 function getPeriodParams(period, dateRange, selectedDate) {
@@ -606,6 +616,7 @@ function DashboardPage({ currentUser, onLogout }) {
   const [analyticsPeriod2From, setAnalyticsPeriod2From] = useState('')
   const [analyticsPeriod2To, setAnalyticsPeriod2To] = useState('')
   const [analyticsAlpha, setAnalyticsAlpha] = useState('0.05')
+  const [analyticsAlternative, setAnalyticsAlternative] = useState('two_sided')
   const [analyticsResult, setAnalyticsResult] = useState(null)
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsError, setAnalyticsError] = useState('')
@@ -813,6 +824,7 @@ function DashboardPage({ currentUser, onLogout }) {
         period2_from: analyticsPeriod2From,
         period2_to: analyticsPeriod2To,
         alpha: analyticsAlpha,
+        alternative: analyticsAlternative,
         data_name: selectedDataName,
         room: selectedRoom,
         consumer_class: selectedConsumerClass,
@@ -1309,6 +1321,20 @@ function DashboardPage({ currentUser, onLogout }) {
               </div>
 
               <div className="energy-analysis-actions">
+                <label className="energy-control energy-control--wide">
+                  <span>Альтернативная гипотеза</span>
+                  <select
+                    value={analyticsAlternative}
+                    onChange={(event) => setAnalyticsAlternative(event.target.value)}
+                  >
+                    {ANALYTICS_ALTERNATIVE_OPTIONS.map((option) => (
+                      <option value={option.value} key={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
                 <label className="energy-control">
                   <span>Уровень значимости</span>
                   <select value={analyticsAlpha} onChange={(event) => setAnalyticsAlpha(event.target.value)}>
@@ -1350,7 +1376,7 @@ function DashboardPage({ currentUser, onLogout }) {
                     <div className="energy-kpi-card__value">
                       {formatNumber(analyticsResult.alpha, 2)}
                     </div>
-                    <div className="energy-kpi-card__meta">двухсторонний z-тест</div>
+                    <div className="energy-kpi-card__meta">{getAnalyticsTestLabel(analyticsResult.alternative)}</div>
                   </article>
 
                   <article className={analyticsResult.reject_null ? 'energy-kpi-card accent-danger' : 'energy-kpi-card accent-primary'}>
@@ -1358,7 +1384,9 @@ function DashboardPage({ currentUser, onLogout }) {
                     <div className="energy-kpi-card__value energy-analysis-decision">
                       {analyticsResult.reject_null ? 'Отвергаем H0' : 'Не отвергаем H0'}
                     </div>
-                    <div className="energy-kpi-card__meta">{analyticsResult.hypothesis}</div>
+                    <div className="energy-kpi-card__meta">
+                      {analyticsResult.alternative_hypothesis ?? analyticsResult.hypothesis}
+                    </div>
                   </article>
                 </section>
 
@@ -1414,6 +1442,12 @@ function DashboardPage({ currentUser, onLogout }) {
                         {formatNumber(analyticsResult.difference_mean_kw, 3)} кВт
                       </strong>
                     </div>
+                    <div className="energy-summary-item">
+                      <span className="energy-summary-item__label">Правило решения</span>
+                      <strong className="energy-summary-item__value">
+                        {analyticsResult.decision_rule ?? 'abs(z_statistic) > z_critical'}
+                      </strong>
+                    </div>
                   </div>
                 </article>
               </section>
@@ -1422,7 +1456,7 @@ function DashboardPage({ currentUser, onLogout }) {
                 <div className="energy-panel__head compact">
                   <div>
                     <h2>Выберите два периода</h2>
-                    <p>После сравнения здесь появятся z-статистика, критическое значение и решение по нулевой гипотезе.</p>
+                    <p>После сравнения здесь появятся z-статистика, критическое значение и решение по выбранной гипотезе.</p>
                   </div>
                 </div>
               </section>
