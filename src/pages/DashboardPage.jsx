@@ -320,7 +320,6 @@ function buildChartSeries(points, granularity) {
   const actual = sampled.map(normalizeChartValue)
   const average =
     actual.length > 0 ? actual.reduce((sum, value) => sum + value, 0) / actual.length : 0
-  const threshold = average * 1.25
 
   return {
     labels: sampled.map((point) => formatChartLabel(point.timestamp, granularity)),
@@ -330,12 +329,6 @@ function buildChartSeries(points, granularity) {
     })),
     actual,
     baseline: actual.map(() => average),
-    deviations: actual.reduce((indexes, value, index) => {
-      if (average > 0 && value >= threshold) {
-        indexes.push(index)
-      }
-      return indexes
-    }, []),
   }
 }
 
@@ -497,11 +490,10 @@ function drawLineChart(canvas, series, hoverPoint = null) {
   series.actual.forEach((value, index) => {
     const x = toX(index)
     const y = toY(value)
-    const isDeviation = series.deviations.includes(index)
 
     context.beginPath()
-    context.arc(x, y, isDeviation ? 5 : 3.4, 0, Math.PI * 2)
-    context.fillStyle = isDeviation ? '#ff7183' : '#4de0c5'
+    context.arc(x, y, 3.4, 0, Math.PI * 2)
+    context.fillStyle = '#4de0c5'
     context.fill()
   })
 
@@ -1007,7 +999,7 @@ function DashboardPage({ currentUser, onLogout }) {
                   {formatNumber(powerStats.maxKw)} <span>кВт</span>
                 </div>
                 <div className="energy-kpi-card__meta">
-                  Пик: {formatDateTime(powerStats.peakTimestamp)}
+                  максимум за выбранный период
                 </div>
               </article>
 
@@ -1032,7 +1024,6 @@ function DashboardPage({ currentUser, onLogout }) {
                   <div className="energy-legend">
                     <span><i className="actual" />Факт</span>
                     <span><i className="baseline" />Среднее</span>
-                    <span><i className="alert" />Пики</span>
                   </div>
                 </div>
                 <div className="energy-chart-wrap">
@@ -1141,11 +1132,11 @@ function DashboardPage({ currentUser, onLogout }) {
                   </div>
 
                   <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Пик нагрузки</span>
+                    <span className="energy-summary-item__label">Максимальная мощность</span>
                     <strong className="energy-summary-item__value">
                       {formatNumber(powerStats.maxKw)} кВт
                     </strong>
-                    <span className="energy-summary-item__note">{formatDateTime(powerStats.peakTimestamp)}</span>
+                    <span className="energy-summary-item__note">максимум в выбранном периоде</span>
                   </div>
 
                   <div className="energy-summary-item">
