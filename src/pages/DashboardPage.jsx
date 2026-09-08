@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { NavLink, Outlet, useOutletContext } from 'react-router'
 import {
   getDashboardFilters,
   getDashboardSummary,
@@ -8,589 +9,43 @@ import {
   getTopDevices,
 } from '../features/dashboard/api/dashboardApi.js'
 import { getPeriodComparison } from '../features/analytics/api/analyticsApi.js'
+import { ROUTES } from '../app/routes.js'
+import ThemeToggle from '../shared/theme/ThemeToggle.jsx'
+import {
+  buildAvailableDates,
+  buildDashboardParams,
+  buildDefaultAnalyticsPeriods,
+  buildPowerStats,
+  buildSummaryFromTimeseries,
+  getDeviceLabel,
+  normalizeFilters,
+  validateAnalyticsPeriods,
+} from './dashboard/dashboardUtils.js'
 import '../dashboard.css'
 
 const NAV_ITEMS = [
-  { id: 'dashboard', label: 'Дашборд' },
-  { id: 'links', label: 'Связи' },
-  { id: 'analytics', label: 'Аналитика' },
+  { id: 'dashboard', label: 'Дашборд', path: ROUTES.dashboard },
+  { id: 'links', label: 'Связи', path: ROUTES.connections },
+  { id: 'analytics', label: 'Аналитика', path: ROUTES.analytics },
 ]
-
-const PERIOD_OPTIONS = [
-  { value: 'all', label: 'Весь период' },
-  { value: '24h', label: '24 часа', hours: 24 },
-  { value: '7d', label: '7 дней', hours: 24 * 7 },
-]
-
-const ANALYTICS_ALTERNATIVE_OPTIONS = [
-  { value: 'two_sided', label: 'Средние не равны' },
-  { value: 'greater', label: 'Первый период больше второго' },
-  { value: 'less', label: 'Первый период меньше второго' },
-]
-
-const DAY_MS = 24 * 60 * 60 * 1000
-const CHART_PADDING = { top: 18, right: 22, bottom: 54, left: 56 }
-const DASHBOARD_TIME_ZONE = 'Europe/Moscow'
-const DASHBOARD_TIME_OFFSET = '+03:00'
-
-function formatNumber(value, digits = 1) {
-  const safeValue = Number.isFinite(Number(value)) ? Number(value) : 0
-
-  return new Intl.NumberFormat('ru-RU', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  }).format(safeValue)
-}
-
-function formatPercent(value, digits = 0) {
-  return `${formatNumber(value, digits)}%`
-}
-
-function textOrFallback(value, fallback = '-') {
-  const text = String(value ?? '').trim()
-  return text || fallback
-}
-
-function formatDateTime(value) {
-  if (!value) {
-    return 'нет данных'
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: DASHBOARD_TIME_ZONE,
-  }).format(new Date(value))
-}
 
 function getUserName(currentUser) {
-  const fullName = [currentUser?.first_name, currentUser?.last_name]
-    .filter(Boolean)
-    .join(' ')
-
+  const fullName = [currentUser?.first_name, currentUser?.last_name].filter(Boolean).join(' ')
   return fullName || currentUser?.email || 'Пользователь'
 }
 
 function getUserInitials(name) {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
-}
-
-function toUtcDateKey(date) {
-  return date.toISOString().slice(0, 10)
-}
-
-function getDateKeyInDashboardTimeZone(value) {
-  if (!value) {
-    return ''
-  }
-
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: DASHBOARD_TIME_ZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date(value))
-  const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-
-  return `${partMap.year}-${partMap.month}-${partMap.day}`
-}
-
-function dateKeyToUtcDate(dateKey) {
-  return new Date(`${dateKey}T00:00:00Z`)
-}
-
-function addDaysToDateKey(dateKey, days) {
-  return toUtcDateKey(new Date(dateKeyToUtcDate(dateKey).getTime() + days * DAY_MS))
-}
-
-function buildAvailableDates(dateRange) {
-  if (!dateRange?.date_from || !dateRange?.date_to) {
-    return []
-  }
-
-  const startKey = getDateKeyInDashboardTimeZone(dateRange.date_from)
-  const endKey = getDateKeyInDashboardTimeZone(dateRange.date_to)
-  const start = dateKeyToUtcDate(startKey)
-  const end = dateKeyToUtcDate(endKey)
-  const dates = []
-
-  for (let current = start; current <= end; current = new Date(current.getTime() + 24 * 60 * 60 * 1000)) {
-    dates.push(toUtcDateKey(current))
-  }
-
-  return dates
-}
-
-function formatDateLabel(dateKey) {
-  if (!dateKey) {
-    return 'Дата'
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    timeZone: DASHBOARD_TIME_ZONE,
-  }).format(new Date(`${dateKey}T00:00:00${DASHBOARD_TIME_OFFSET}`))
-}
-
-function getAnalyticsTestLabel(alternative) {
-  return alternative === 'two_sided' ? 'двухсторонний z-тест' : 'односторонний z-тест'
-}
-
-function getPeriodParams(period, dateRange, selectedDate) {
-  const periodOption = PERIOD_OPTIONS.find((option) => option.value === period)
-
-  if (!periodOption?.hours || !dateRange?.date_to) {
-    return {}
-  }
-
-  const availableDates = buildAvailableDates(dateRange)
-  const fallbackDate = availableDates.at(-1) ?? getDateKeyInDashboardTimeZone(dateRange.date_to)
-  const dateKey = availableDates.includes(selectedDate) ? selectedDate : fallbackDate
-
-  if (period === '24h') {
-    return {
-      from: `${dateKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
-      to: `${dateKey}T23:59:59${DASHBOARD_TIME_OFFSET}`,
-    }
-  }
-
-  const days = Math.max(1, Math.round(periodOption.hours / 24))
-  const dateFromKey = addDaysToDateKey(dateKey, -(days - 1))
-  const minDateKey = getDateKeyInDashboardTimeZone(dateRange.date_from)
-  const clampedDateFromKey = dateFromKey < minDateKey ? minDateKey : dateFromKey
-
-  return {
-    from: `${clampedDateFromKey}T00:00:00${DASHBOARD_TIME_OFFSET}`,
-    to: `${dateKey}T23:59:59${DASHBOARD_TIME_OFFSET}`,
-  }
-}
-
-function getAggregationGranularity(period) {
-  if (period === '24h') {
-    return 'hour'
-  }
-
-  if (period === '7d') {
-    return 'day'
-  }
-
-  return 'week'
-}
-
-function buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumerClass, period, dateRange, selectedDate }) {
-  return {
-    data_name: selectedDataName,
-    room: selectedRoom,
-    consumer_class: selectedConsumerClass,
-    granularity: getAggregationGranularity(period),
-    ...getPeriodParams(period, dateRange, selectedDate),
-  }
-}
-
-function buildDefaultAnalyticsPeriods(availableDates) {
-  if (availableDates.length < 14) {
-    return null
-  }
-
-  return {
-    period1From: availableDates[0],
-    period1To: availableDates[6],
-    period2From: availableDates.at(-7),
-    period2To: availableDates.at(-1),
-  }
-}
-
-function validateAnalyticsPeriods({ period1From, period1To, period2From, period2To }) {
-  if (!period1From || !period1To || !period2From || !period2To) {
-    return 'Заполните оба периода'
-  }
-  if (period1From > period1To) {
-    return 'В первом периоде дата начала позже даты конца'
-  }
-  if (period2From > period2To) {
-    return 'Во втором периоде дата начала позже даты конца'
-  }
-  if (!(period1To < period2From || period2To < period1From)) {
-    return 'Периоды не должны пересекаться'
-  }
-
-  return ''
-}
-
-function normalizeFilters(filters = {}) {
-  return {
-    date_range: filters.date_range ?? null,
-    devices: filters.devices ?? [],
-    rooms: filters.rooms ?? [],
-    consumer_classes: filters.consumer_classes ?? [],
-    buildings: filters.buildings ?? [],
-    floors: filters.floors ?? [],
-    locations: filters.locations ?? [],
-    metrics: filters.metrics ?? [],
-  }
-}
-
-function getDeviceLabel(device, fallback = '-') {
-  return textOrFallback(device?.label ?? device?.data_name, fallback)
-}
-
-function getRoomLabel(room) {
-  return textOrFallback(room?.room)
-}
-
-function normalizeChartValue(point) {
-  return Number(point.value ?? 0)
-}
-
-function buildPowerStats(points, summary) {
-  const series = points
-    .map((point) => ({
-      timestamp: point.timestamp,
-      kw: normalizeChartValue(point),
-    }))
-    .filter((point) => Number.isFinite(point.kw))
-
-  if (series.length === 0) {
-    const fallbackMax = Number(summary?.max_power_kw ?? 0)
-    const fallbackAvg = Number(summary?.avg_power_kw ?? 0)
-
-    return {
-      currentKw: Number(summary?.current_power_kw ?? 0),
-      maxKw: fallbackMax,
-      avgKw: fallbackAvg,
-      minKw: 0,
-      loadFactor: fallbackMax > 0 ? (fallbackAvg / fallbackMax) * 100 : 0,
-      pointsCount: 0,
-      lastTimestamp: summary?.date_to ?? null,
-      peakTimestamp: summary?.date_to ?? null,
-    }
-  }
-
-  const current = series.at(-1)
-  const peak = series.reduce((best, point) => (point.kw > best.kw ? point : best), series[0])
-  const min = series.reduce((best, point) => (point.kw < best.kw ? point : best), series[0])
-  const avgKw = series.reduce((sum, point) => sum + point.kw, 0) / series.length
-
-  return {
-    currentKw: current.kw,
-    maxKw: peak.kw,
-    avgKw,
-    minKw: min.kw,
-    loadFactor: peak.kw > 0 ? (avgKw / peak.kw) * 100 : 0,
-    pointsCount: series.length,
-    lastTimestamp: current.timestamp,
-    peakTimestamp: peak.timestamp,
-  }
-}
-
-function formatChartLabel(value, granularity) {
-  const date = new Date(value)
-
-  if (granularity === 'hour') {
-    return new Intl.DateTimeFormat('ru-RU', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: DASHBOARD_TIME_ZONE,
-    }).format(date)
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    timeZone: DASHBOARD_TIME_ZONE,
-  }).format(date)
-}
-
-function buildChartSeries(points, granularity) {
-  const source = points.length > 0 ? points : []
-  const maxItems = 32
-  const step = Math.max(1, Math.ceil(source.length / maxItems))
-  const sampled = source.filter((_, index) => index % step === 0)
-  const actual = sampled.map(normalizeChartValue)
-  const average =
-    actual.length > 0 ? actual.reduce((sum, value) => sum + value, 0) / actual.length : 0
-
-  return {
-    labels: sampled.map((point) => formatChartLabel(point.timestamp, granularity)),
-    points: sampled.map((point, index) => ({
-      timestamp: point.timestamp,
-      value: actual[index],
-    })),
-    actual,
-    baseline: actual.map(() => average),
-  }
-}
-
-function getChartLayout(canvas, series) {
-  if (!canvas) {
-    return null
-  }
-
-  const parent = canvas.parentElement
-
-  if (!parent) {
-    return null
-  }
-
-  const width = parent.clientWidth
-  const height = parent.clientHeight
-  const values = [...series.actual, ...series.baseline].filter((value) => Number.isFinite(value))
-  const chartWidth = width - CHART_PADDING.left - CHART_PADDING.right
-  const chartHeight = height - CHART_PADDING.top - CHART_PADDING.bottom
-  const minValue = values.length > 0 ? Math.max(0, Math.floor(Math.min(...values) * 0.9)) : 0
-  const maxValue = values.length > 0 ? Math.max(1, Math.ceil(Math.max(...values) * 1.1)) : 1
-  const xStep = chartWidth / Math.max(series.actual.length - 1, 1)
-
-  const toX = (index) => CHART_PADDING.left + index * xStep
-  const toY = (value) =>
-    CHART_PADDING.top + ((maxValue - value) / (maxValue - minValue || 1)) * chartHeight
-
-  return {
-    width,
-    height,
-    values,
-    chartWidth,
-    chartHeight,
-    minValue,
-    maxValue,
-    xStep,
-    toX,
-    toY,
-  }
-}
-
-function getNearestChartPoint(canvas, series, event) {
-  const layout = getChartLayout(canvas, series)
-
-  if (!layout || series.points.length === 0) {
-    return null
-  }
-
-  const rect = canvas.getBoundingClientRect()
-  const pointerX = event.clientX - rect.left
-  const nearestIndex = Math.min(
-    series.points.length - 1,
-    Math.max(0, Math.round((pointerX - CHART_PADDING.left) / layout.xStep))
-  )
-  const value = series.actual[nearestIndex]
-  const pointX = layout.toX(nearestIndex)
-  const pointY = layout.toY(value)
-
-  return {
-    ...series.points[nearestIndex],
-    index: nearestIndex,
-    x: Math.min(layout.width - 86, Math.max(86, pointX)),
-    y: Math.max(76, pointY),
-    label: series.labels[nearestIndex],
-  }
-}
-
-function drawLineChart(canvas, series, hoverPoint = null) {
-  const layout = getChartLayout(canvas, series)
-
-  if (!layout) {
-    return
-  }
-
-  const { width, height, values, chartHeight, minValue, maxValue, toX, toY } = layout
-  const ratio = window.devicePixelRatio || 1
-
-  canvas.width = width * ratio
-  canvas.height = height * ratio
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
-
-  const context = canvas.getContext('2d')
-
-  if (!context) {
-    return
-  }
-
-  context.setTransform(ratio, 0, 0, ratio, 0, 0)
-  context.clearRect(0, 0, width, height)
-
-  if (values.length === 0) {
-    context.fillStyle = 'rgba(159, 182, 215, 0.88)'
-    context.font = '15px "Segoe UI", sans-serif'
-    context.textAlign = 'center'
-    context.fillText('Нет данных для выбранных фильтров', width / 2, height / 2)
-    return
-  }
-
-  context.strokeStyle = 'rgba(155, 184, 223, 0.10)'
-  context.lineWidth = 1
-
-  for (let index = 0; index <= 4; index += 1) {
-    const y = CHART_PADDING.top + (chartHeight / 4) * index
-    context.beginPath()
-    context.moveTo(CHART_PADDING.left, y)
-    context.lineTo(width - CHART_PADDING.right, y)
-    context.stroke()
-  }
-
-  context.fillStyle = 'rgba(159, 182, 215, 0.88)'
-  context.font = '12px "Segoe UI", sans-serif'
-  context.textAlign = 'right'
-
-  for (let index = 0; index <= 4; index += 1) {
-    const value = maxValue - ((maxValue - minValue) / 4) * index
-    const y = CHART_PADDING.top + (chartHeight / 4) * index + 4
-    context.fillText(`${formatNumber(value, 0)} кВт`, CHART_PADDING.left - 10, y)
-  }
-
-  context.textAlign = 'center'
-  const labelStep = Math.max(1, Math.ceil(series.labels.length / 8))
-  series.labels.forEach((label, index) => {
-    if (index % labelStep === 0) {
-      context.fillText(label, toX(index), height - 18)
-    }
-  })
-
-  context.beginPath()
-  series.baseline.forEach((value, index) => {
-    const x = toX(index)
-    const y = toY(value)
-    if (index === 0) {
-      context.moveTo(x, y)
-      return
-    }
-    context.lineTo(x, y)
-  })
-  context.setLineDash([7, 7])
-  context.strokeStyle = 'rgba(143, 183, 255, 0.95)'
-  context.lineWidth = 2
-  context.stroke()
-  context.setLineDash([])
-
-  context.beginPath()
-  series.actual.forEach((value, index) => {
-    const x = toX(index)
-    const y = toY(value)
-    if (index === 0) {
-      context.moveTo(x, y)
-      return
-    }
-    context.lineTo(x, y)
-  })
-  context.strokeStyle = '#4de0c5'
-  context.lineWidth = 3
-  context.stroke()
-
-  series.actual.forEach((value, index) => {
-    const x = toX(index)
-    const y = toY(value)
-
-    context.beginPath()
-    context.arc(x, y, 3.4, 0, Math.PI * 2)
-    context.fillStyle = '#4de0c5'
-    context.fill()
-  })
-
-  if (hoverPoint && series.actual[hoverPoint.index] !== undefined) {
-    const x = toX(hoverPoint.index)
-    const y = toY(series.actual[hoverPoint.index])
-
-    context.beginPath()
-    context.moveTo(x, CHART_PADDING.top)
-    context.lineTo(x, height - CHART_PADDING.bottom)
-    context.strokeStyle = 'rgba(245, 251, 255, 0.34)'
-    context.lineWidth = 1
-    context.stroke()
-
-    context.beginPath()
-    context.arc(x, y, 6, 0, Math.PI * 2)
-    context.fillStyle = '#06162f'
-    context.fill()
-    context.lineWidth = 3
-    context.strokeStyle = '#f5fbff'
-    context.stroke()
-  }
-}
-
-function buildSummaryFromTimeseries(points, filters, queryParams) {
-  const values = points
-    .map((point) => Number(point.value ?? 0))
-    .filter((value) => Number.isFinite(value))
-  const totalEnergy = points.reduce((total, point) => {
-    const energy = Number(point.energy_kwh ?? 0)
-    return Number.isFinite(energy) ? total + energy : total
-  }, 0)
-
-  if (values.length === 0) {
-    return {
-      points: 0,
-      devices_count: 0,
-      date_from: queryParams.from ?? filters?.date_range?.date_from ?? null,
-      date_to: queryParams.to ?? filters?.date_range?.date_to ?? null,
-      total_energy_kwh: 0,
-      avg_power_kw: 0,
-      max_power_kw: 0,
-      avg_voltage_v: 0,
-      avg_frequency_hz: 0,
-      current_power_kw: 0,
-      timestamp_iso: queryParams.to ?? filters?.date_range?.date_to ?? null,
-    }
-  }
-
-  const sum = values.reduce((total, value) => total + value, 0)
-  const max = Math.max(...values)
-
-  return {
-    points: points.length,
-    devices_count: filters?.devices?.length ?? 0,
-    date_from: points[0]?.timestamp ?? queryParams.from ?? filters?.date_range?.date_from ?? null,
-    date_to: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
-    total_energy_kwh: totalEnergy,
-    avg_power_kw: sum / values.length,
-    max_power_kw: max,
-    avg_voltage_v: 0,
-    avg_frequency_hz: 0,
-    current_power_kw: values.at(-1),
-    timestamp_iso: points.at(-1)?.timestamp ?? queryParams.to ?? filters?.date_range?.date_to ?? null,
-  }
+  return name.split(' ').filter(Boolean).map((part) => part[0]).join('').slice(0, 2).toUpperCase()
 }
 
 function SidebarIcon({ id }) {
-  if (id === 'analytics') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M4 19h16" />
-        <path d="M6 16l4-5 4 3 4-7" />
-        <path d="M18 7h-4M18 7v4" />
-      </svg>
-    )
-  }
-
-  if (id === 'links') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M7 12h10M9 7h6M9 17h6" />
-        <path d="M5 4h14v16H5z" />
-      </svg>
-    )
-  }
-
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z" />
-    </svg>
-  )
+  if (id === 'analytics') return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 19h16" /><path d="M6 16l4-5 4 3 4-7" /><path d="M18 7h-4M18 7v4" /></svg>
+  if (id === 'links') return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 12h10M9 7h6M9 17h6" /><path d="M5 4h14v16H5z" /></svg>
+  return <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h7v7H4zM13 4h7v4h-7zM13 10h7v10h-7zM4 13h7v7H4z" /></svg>
 }
 
-function DashboardPage({ currentUser, onLogout }) {
-  const canvasRef = useRef(null)
-  const [activeView, setActiveView] = useState('dashboard')
+function DashboardPage() {
+  const { currentUser, onLogout, preview = false } = useOutletContext()
   const [filters, setFilters] = useState(null)
   const [summary, setSummary] = useState(null)
   const [timeseries, setTimeseries] = useState([])
@@ -602,7 +57,6 @@ function DashboardPage({ currentUser, onLogout }) {
   const [selectedConsumerClass, setSelectedConsumerClass] = useState('all')
   const [period, setPeriod] = useState('24h')
   const [selectedDate, setSelectedDate] = useState('')
-  const [hoverPoint, setHoverPoint] = useState(null)
   const [analyticsPeriod1From, setAnalyticsPeriod1From] = useState('')
   const [analyticsPeriod1To, setAnalyticsPeriod1To] = useState('')
   const [analyticsPeriod2From, setAnalyticsPeriod2From] = useState('')
@@ -615,34 +69,13 @@ function DashboardPage({ currentUser, onLogout }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const userName = getUserName(currentUser)
-  const availableDates = useMemo(
-    () => buildAvailableDates(filters?.date_range),
-    [filters?.date_range]
-  )
-
-  const queryParams = useMemo(
-    () =>
-      buildDashboardParams({
-        selectedDataName,
-        selectedRoom,
-        selectedConsumerClass,
-        period,
-        dateRange: filters?.date_range,
-        selectedDate,
-      }),
-    [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom]
-  )
-  const chartSeries = useMemo(() => buildChartSeries(timeseries, queryParams.granularity), [queryParams.granularity, timeseries])
+  const availableDates = useMemo(() => buildAvailableDates(filters?.date_range), [filters?.date_range])
+  const queryParams = useMemo(() => buildDashboardParams({ selectedDataName, selectedRoom, selectedConsumerClass, period, dateRange: filters?.date_range, selectedDate }), [filters?.date_range, period, selectedConsumerClass, selectedDataName, selectedDate, selectedRoom])
   const powerStats = useMemo(() => buildPowerStats(timeseries, summary), [summary, timeseries])
-  const maxRoomEnergy = Math.max(...roomLoads.map((room) => room.energy_kwh || 0), 1)
-  const selectedDeviceLabel =
-    selectedDataName === 'all'
-      ? 'Все счетчики'
-      : getDeviceLabel(filters?.devices.find((device) => device.data_name === selectedDataName), selectedDataName)
+  const selectedDeviceLabel = selectedDataName === 'all' ? 'Все счетчики' : getDeviceLabel(filters?.devices.find((device) => device.data_name === selectedDataName), selectedDataName)
 
   useEffect(() => {
     let active = true
-
     async function loadFilters() {
       try {
         const nextFilters = await getDashboardFilters()
@@ -654,28 +87,17 @@ function DashboardPage({ currentUser, onLogout }) {
       } catch (requestError) {
         if (active) {
           setError(requestError.message)
+          setLoading(false)
         }
       }
     }
-
     loadFilters()
-
-    return () => {
-      active = false
-    }
+    return () => { active = false }
   }, [])
 
   useEffect(() => {
-    if (!filters) {
-      return undefined
-    }
-
-    if (period !== 'all' && !selectedDate) {
-      return undefined
-    }
-
+    if (!filters || (period !== 'all' && !selectedDate)) return undefined
     let active = true
-
     async function loadDashboardData() {
       setLoading(true)
       try {
@@ -688,92 +110,39 @@ function DashboardPage({ currentUser, onLogout }) {
         const nextTimeseries = timeseriesResult.status === 'fulfilled' ? timeseriesResult.value : { points: [] }
         const nextTopDevices = topDevicesResult.status === 'fulfilled' ? topDevicesResult.value : []
         const nextRoomLoads = roomLoadsResult.status === 'fulfilled' ? roomLoadsResult.value : []
-        const nextSummary =
-          summaryResult.status === 'fulfilled' && summaryResult.value
-            ? summaryResult.value
-            : buildSummaryFromTimeseries(nextTimeseries.points ?? [], filters, queryParams)
-        const nextDeviceDetail =
-          selectedDataName !== 'all'
-            ? await getDeviceDetail(selectedDataName, queryParams)
-            : null
-
+        const nextSummary = summaryResult.status === 'fulfilled' && summaryResult.value ? summaryResult.value : buildSummaryFromTimeseries(nextTimeseries.points ?? [], filters, queryParams)
+        const nextDeviceDetail = selectedDataName !== 'all' ? await getDeviceDetail(selectedDataName, queryParams) : null
         if (active) {
           setSummary(nextSummary)
           setTimeseries(nextTimeseries.points ?? [])
           setTopDevices(nextTopDevices ?? [])
           setRoomLoads(nextRoomLoads ?? [])
           setDeviceDetail(nextDeviceDetail)
-          const failedRequiredRequest = timeseriesResult.status === 'rejected' || topDevicesResult.status === 'rejected'
-          setError(failedRequiredRequest ? 'Не удалось загрузить часть данных дашборда' : '')
+          setError(timeseriesResult.status === 'rejected' || topDevicesResult.status === 'rejected' ? 'Не удалось загрузить часть данных дашборда' : '')
         }
       } catch (requestError) {
-        if (active) {
-          setError(requestError.message)
-        }
+        if (active) setError(requestError.message)
       } finally {
-        if (active) {
-          setLoading(false)
-        }
+        if (active) setLoading(false)
       }
     }
-
     loadDashboardData()
-
-    return () => {
-      active = false
-    }
+    return () => { active = false }
   }, [filters, period, queryParams, selectedDataName, selectedDate])
 
   useEffect(() => {
-    setHoverPoint(null)
-  }, [queryParams])
-
-  useEffect(() => {
-    if (period === 'all' || availableDates.length === 0) {
-      setHoverPoint(null)
-      return
-    }
-
-    if (!selectedDate || !availableDates.includes(selectedDate)) {
-      setSelectedDate(availableDates.at(-1))
-    }
+    if (period !== 'all' && availableDates.length && (!selectedDate || !availableDates.includes(selectedDate))) setSelectedDate(availableDates.at(-1))
   }, [availableDates, period, selectedDate])
 
   useEffect(() => {
-    if (analyticsPeriod1From || analyticsPeriod1To || analyticsPeriod2From || analyticsPeriod2To) {
-      return
-    }
-
+    if (analyticsPeriod1From || analyticsPeriod1To || analyticsPeriod2From || analyticsPeriod2To) return
     const defaultPeriods = buildDefaultAnalyticsPeriods(availableDates)
-    if (!defaultPeriods) {
-      return
-    }
-
+    if (!defaultPeriods) return
     setAnalyticsPeriod1From(defaultPeriods.period1From)
     setAnalyticsPeriod1To(defaultPeriods.period1To)
     setAnalyticsPeriod2From(defaultPeriods.period2From)
     setAnalyticsPeriod2To(defaultPeriods.period2To)
   }, [analyticsPeriod1From, analyticsPeriod1To, analyticsPeriod2From, analyticsPeriod2To, availableDates])
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-
-    if (!canvas) {
-      return undefined
-    }
-
-    const redraw = () => drawLineChart(canvas, chartSeries, hoverPoint)
-    redraw()
-
-    const resizeObserver = new ResizeObserver(redraw)
-    resizeObserver.observe(canvas.parentElement)
-    window.addEventListener('resize', redraw)
-
-    return () => {
-      resizeObserver.disconnect()
-      window.removeEventListener('resize', redraw)
-    }
-  }, [chartSeries, hoverPoint])
 
   function resetDependentFilters(nextDataName) {
     setSelectedDataName(nextDataName)
@@ -783,34 +152,17 @@ function DashboardPage({ currentUser, onLogout }) {
     }
   }
 
-  function handleChartPointerMove(event) {
-    const nextPoint = getNearestChartPoint(canvasRef.current, chartSeries, event)
-    setHoverPoint(nextPoint)
-  }
-
-  function handleChartPointerLeave() {
-    setHoverPoint(null)
-  }
-
   async function handleAnalyticsCompare(event) {
     event.preventDefault()
-    const validationError = validateAnalyticsPeriods({
-      period1From: analyticsPeriod1From,
-      period1To: analyticsPeriod1To,
-      period2From: analyticsPeriod2From,
-      period2To: analyticsPeriod2To,
-    })
-
+    const validationError = validateAnalyticsPeriods({ period1From: analyticsPeriod1From, period1To: analyticsPeriod1To, period2From: analyticsPeriod2From, period2To: analyticsPeriod2To })
     if (validationError) {
       setAnalyticsError(validationError)
       return
     }
-
     setAnalyticsLoading(true)
     setAnalyticsError('')
-
     try {
-      const result = await getPeriodComparison({
+      setAnalyticsResult(await getPeriodComparison({
         period1_from: analyticsPeriod1From,
         period1_to: analyticsPeriod1To,
         period2_from: analyticsPeriod2From,
@@ -820,8 +172,7 @@ function DashboardPage({ currentUser, onLogout }) {
         data_name: selectedDataName,
         room: selectedRoom,
         consumer_class: selectedConsumerClass,
-      })
-      setAnalyticsResult(result)
+      }))
     } catch (requestError) {
       setAnalyticsError(requestError.message)
     } finally {
@@ -829,708 +180,33 @@ function DashboardPage({ currentUser, onLogout }) {
     }
   }
 
+  const pageContext = {
+    filters, summary, timeseries, topDevices, roomLoads, deviceDetail,
+    selectedDataName, selectedRoom, selectedConsumerClass, period, selectedDate, availableDates, powerStats, selectedDeviceLabel, queryParams,
+    analyticsPeriod1From, analyticsPeriod1To, analyticsPeriod2From, analyticsPeriod2To, analyticsAlpha, analyticsAlternative, analyticsResult, analyticsLoading, analyticsError,
+    resetDependentFilters, setSelectedDataName, setSelectedRoom, setSelectedConsumerClass, setPeriod, setSelectedDate,
+    setAnalyticsPeriod1From, setAnalyticsPeriod1To, setAnalyticsPeriod2From, setAnalyticsPeriod2To, setAnalyticsAlpha, setAnalyticsAlternative, handleAnalyticsCompare,
+  }
+
   return (
     <main className="energy-dashboard">
       <div className="energy-dashboard__glow energy-dashboard__glow--left" aria-hidden="true" />
       <div className="energy-dashboard__glow energy-dashboard__glow--right" aria-hidden="true" />
-
       <div className="energy-shell">
         <aside className="energy-sidebar">
-          <div className="energy-brand">
-            <div className="energy-brand__mark" />
-            <div>
-              <div className="energy-brand__title">Smart Energy Consumption</div>
-              <div className="energy-brand__subtitle">Dashboard</div>
-            </div>
-          </div>
-
+          <div className="energy-brand"><div className="energy-brand__mark" /><div><div className="energy-brand__title">Smart Energy Consumption</div><div className="energy-brand__subtitle">Dashboard</div></div></div>
           <nav className="energy-nav" aria-label="Навигация">
-            {NAV_ITEMS.map((item) => (
-              <button
-                className={activeView === item.id ? 'energy-nav__item active' : 'energy-nav__item'}
-                type="button"
-                key={item.id}
-                onClick={() => setActiveView(item.id)}
-              >
-                <span className="energy-nav__icon">
-                  <SidebarIcon id={item.id} />
-                </span>
-                <span>{item.label}</span>
-              </button>
-            ))}
+            {NAV_ITEMS.map((item) => <NavLink className={({ isActive }) => isActive ? 'energy-nav__item active' : 'energy-nav__item'} to={{ pathname: item.path, search: preview ? '?preview=1' : '' }} key={item.id}><span className="energy-nav__icon"><SidebarIcon id={item.id} /></span><span>{item.label}</span></NavLink>)}
           </nav>
-
           <div className="energy-sidebar__footer">
-            <div className="energy-status-pill">
-              <span className="energy-status-pill__dot" />
-              <span>{loading ? 'Загружаем данные' : 'База подключена'}</span>
-            </div>
-
-            <button className="energy-user-card" type="button" onClick={onLogout}>
-              <span className="energy-user-card__avatar">{getUserInitials(userName)}</span>
-              <span className="energy-user-card__meta">
-                <strong>{userName}</strong>
-                <span>Выйти</span>
-              </span>
-            </button>
+            <ThemeToggle />
+            <div className="energy-status-pill" role="status" aria-live="polite"><span className="energy-status-pill__dot" /><span>{error ? 'Ошибка подключения' : loading ? 'Загружаем данные' : 'База подключена'}</span></div>
+            <button className="energy-user-card" type="button" onClick={onLogout} aria-label={`Выйти из аккаунта ${userName}`}><span className="energy-user-card__avatar">{getUserInitials(userName)}</span><span className="energy-user-card__meta"><strong>{userName}</strong><span>Выйти</span></span></button>
           </div>
         </aside>
-
-        <section className="energy-main">
-          {error ? <div className="energy-alert">{error}</div> : null}
-
-          <section className={activeView === 'dashboard' ? 'energy-view active' : 'energy-view'}>
-            <header className="energy-topbar">
-              <div>
-                <h1>Дашборд энергопотребления</h1>
-              </div>
-
-              <div className="energy-toolbar">
-                <label className="energy-control energy-control--wide">
-                  <span>Счетчик</span>
-                  <select
-                    value={selectedDataName}
-                    onChange={(event) => resetDependentFilters(event.target.value)}
-                    disabled={!filters}
-                  >
-                    <option value="all">Все счетчики</option>
-                    {filters?.devices.map((device) => (
-                      <option value={device.data_name} key={device.data_name}>
-                        {getDeviceLabel(device)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Помещение</span>
-                  <select
-                    value={selectedRoom}
-                    onChange={(event) => {
-                      setSelectedRoom(event.target.value)
-                      setSelectedDataName('all')
-                    }}
-                    disabled={!filters || selectedDataName !== 'all'}
-                  >
-                    <option value="all">Все помещения</option>
-                    {filters?.rooms.map((room) => (
-                      <option value={room.room} key={room.room}>
-                        {getRoomLabel(room)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Класс</span>
-                  <select
-                    value={selectedConsumerClass}
-                    onChange={(event) => {
-                      setSelectedConsumerClass(event.target.value)
-                      setSelectedDataName('all')
-                    }}
-                    disabled={!filters || selectedDataName !== 'all'}
-                  >
-                    <option value="all">Все классы</option>
-                    {filters?.consumer_classes.map((item) => (
-                      <option value={item.consumer_class} key={item.consumer_class}>
-                        {textOrFallback(item.consumer_class)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Период</span>
-                  <select value={period} onChange={(event) => setPeriod(event.target.value)}>
-                    {PERIOD_OPTIONS.map((option) => (
-                      <option value={option.value} key={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Дата</span>
-                  <select
-                    value={selectedDate}
-                    onChange={(event) => setSelectedDate(event.target.value)}
-                    disabled={!filters || period === 'all'}
-                  >
-                    {availableDates.map((dateKey) => (
-                      <option value={dateKey} key={dateKey}>
-                        {formatDateLabel(dateKey)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <div className="energy-update-chip">
-                  До: <strong>{formatDateTime(powerStats.lastTimestamp ?? summary?.date_to ?? filters?.date_range?.date_to)}</strong>
-                </div>
-              </div>
-            </header>
-
-            <section className="energy-kpi-grid">
-              <article className="energy-kpi-card accent-primary">
-                <div className="energy-kpi-card__label">Средняя мощность</div>
-                <div className="energy-kpi-card__value">
-                  {formatNumber(powerStats.avgKw)} <span>кВт</span>
-                </div>
-                <div className="energy-kpi-card__meta">
-                  {selectedDeviceLabel}
-                </div>
-              </article>
-
-              <article className="energy-kpi-card">
-                <div className="energy-kpi-card__label">Энергия за период</div>
-                <div className="energy-kpi-card__value">
-                  {formatNumber(summary?.total_energy_kwh, 0)} <span>кВт·ч</span>
-                </div>
-                <div className="energy-kpi-card__meta">
-                  {formatDateTime(summary?.date_from)} - {formatDateTime(summary?.date_to)}
-                </div>
-              </article>
-
-              <article className="energy-kpi-card accent-warning">
-                <div className="energy-kpi-card__label">Максимальная мощность</div>
-                <div className="energy-kpi-card__value">
-                  {formatNumber(powerStats.maxKw)} <span>кВт</span>
-                </div>
-                <div className="energy-kpi-card__meta">
-                  максимум за выбранный период
-                </div>
-              </article>
-
-              <article className="energy-kpi-card accent-danger">
-                <div className="energy-kpi-card__label">Счетчики в выборке</div>
-                <div className="energy-kpi-card__value">
-                  {formatNumber(summary?.devices_count, 0)} <span>шт.</span>
-                </div>
-                <div className="energy-kpi-card__meta">
-                  Точек периода: {formatNumber(powerStats.pointsCount, 0)}
-                </div>
-              </article>
-            </section>
-
-            <section className="energy-content-grid energy-content-grid--main">
-              <article className="energy-panel energy-chart-panel">
-                <div className="energy-panel__head">
-                  <div>
-                    <h2>Динамика активной мощности</h2>
-                    <p>Почасовая, посуточная или понедельная агрегация по выбранному периоду</p>
-                  </div>
-                  <div className="energy-legend">
-                    <span><i className="actual" />Факт</span>
-                    <span><i className="baseline" />Среднее</span>
-                  </div>
-                </div>
-                <div className="energy-chart-wrap">
-                  <canvas
-                    ref={canvasRef}
-                    id="lineChart"
-                    aria-label="График динамики энергопотребления"
-                    onPointerMove={handleChartPointerMove}
-                    onPointerLeave={handleChartPointerLeave}
-                  />
-                  {hoverPoint ? (
-                    <div
-                      className="energy-chart-tooltip"
-                      style={{
-                        left: `${hoverPoint.x}px`,
-                        top: `${hoverPoint.y}px`,
-                      }}
-                    >
-                      <span>{hoverPoint.label}</span>
-                      <strong>{formatNumber(hoverPoint.value, 2)} кВт</strong>
-                    </div>
-                  ) : null}
-                </div>
-              </article>
-
-              <article className="energy-panel">
-                <div className="energy-panel__head compact">
-                  <div>
-                    <h2>Топ счетчиков</h2>
-                    <p>По суммарной энергии в выбранном периоде</p>
-                  </div>
-                </div>
-
-                <div className="energy-event-list">
-                  {topDevices.slice(0, 6).map((device, index) => (
-                    <article className="energy-event-item" key={device.data_name}>
-                      <div className="energy-event-item__time">#{index + 1}</div>
-                      <div className="energy-event-item__body">
-                        <div className="energy-event-item__title">{getDeviceLabel(device)}</div>
-                        <div className="energy-event-item__text">
-                          {formatNumber(device.energy_kwh, 0)} кВт·ч · максимум {formatNumber(device.max_power_kw)} кВт
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </article>
-            </section>
-
-            <section className="energy-content-grid energy-content-grid--secondary">
-              <article className="energy-panel">
-                <div className="energy-panel__head compact">
-                  <div>
-                    <h2>Потребление по помещениям</h2>
-                    <p>Помещения, связанные со счетчиками через справочники</p>
-                  </div>
-                </div>
-
-                <div className="energy-bar-chart">
-                  {roomLoads.length > 0 ? (
-                    roomLoads.map((room) => (
-                      <div className="energy-bar-row" key={room.room}>
-                        <div className="energy-bar-row__label">{getRoomLabel(room)}</div>
-                        <div className="energy-bar-row__track">
-                          <span
-                            className="energy-bar-row__fill"
-                            style={{
-                              width: `${((room.energy_kwh || 0) / maxRoomEnergy) * 100}%`,
-                            }}
-                          />
-                        </div>
-                        <div className="energy-bar-row__value">
-                          {formatNumber(room.energy_kwh, 0)} кВт·ч
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="energy-bar-empty">Нет агрегированных данных за выбранный период</div>
-                  )}
-                </div>
-              </article>
-
-              <article className="energy-panel">
-                <div className="energy-panel__head compact">
-                  <div>
-                    <h2>Краткая сводка</h2>
-                    <p>Параметры выбранной выборки из базы</p>
-                  </div>
-                </div>
-
-                <div className="energy-summary-list">
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Средняя мощность периода</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(powerStats.avgKw)} кВт
-                    </strong>
-                    <span className="energy-summary-item__note">среднее значение агрегированной линии</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Минимальная мощность</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(powerStats.minKw)} кВт
-                    </strong>
-                    <span className="energy-summary-item__note">минимум в выбранном периоде</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Максимальная мощность</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(powerStats.maxKw)} кВт
-                    </strong>
-                    <span className="energy-summary-item__note">максимум в выбранном периоде</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Коэффициент загрузки</span>
-                    <strong className="energy-summary-item__value">
-                      {formatPercent(powerStats.loadFactor)}
-                    </strong>
-                    <span className="energy-summary-item__note">средняя мощность / максимум периода</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Среднее напряжение</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(summary?.avg_voltage_v)} В
-                    </strong>
-                    <span className="energy-summary-item__note">по доступным фазам счетчиков</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Средняя частота</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(summary?.avg_frequency_hz, 2)} Гц
-                    </strong>
-                    <span className="energy-summary-item__note">из `frequency_hz_avg`</span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Самый энергоемкий счетчик</span>
-                    <strong className="energy-summary-item__value">
-                      {topDevices[0] ? getDeviceLabel(topDevices[0]) : 'нет данных'}
-                    </strong>
-                    <span className="energy-summary-item__note">
-                      {formatNumber(topDevices[0]?.energy_kwh, 0)} кВт·ч
-                    </span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Диапазон выборки</span>
-                    <strong className="energy-summary-item__value">
-                      {formatDateTime(summary?.date_from)}
-                    </strong>
-                    <span className="energy-summary-item__note">
-                      до {formatDateTime(summary?.date_to)}
-                    </span>
-                  </div>
-
-                  <div className="energy-summary-item">
-                    <span className="energy-summary-item__label">Строк измерений</span>
-                    <strong className="energy-summary-item__value">
-                      {formatNumber(summary?.points, 0)}
-                    </strong>
-                    <span className="energy-summary-item__note">агрегированные записи счетчиков</span>
-                  </div>
-                </div>
-              </article>
-            </section>
-          </section>
-
-          <section className={activeView === 'analytics' ? 'energy-view active' : 'energy-view'}>
-            <header className="energy-topbar">
-              <div>
-                <h1>Аналитика</h1>
-              </div>
-
-              <div className="energy-toolbar">
-                <label className="energy-control energy-control--wide">
-                  <span>Счетчик</span>
-                  <select
-                    value={selectedDataName}
-                    onChange={(event) => resetDependentFilters(event.target.value)}
-                    disabled={!filters}
-                  >
-                    <option value="all">Все счетчики</option>
-                    {filters?.devices.map((device) => (
-                      <option value={device.data_name} key={device.data_name}>
-                        {getDeviceLabel(device)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Помещение</span>
-                  <select
-                    value={selectedRoom}
-                    onChange={(event) => {
-                      setSelectedRoom(event.target.value)
-                      setSelectedDataName('all')
-                    }}
-                    disabled={!filters || selectedDataName !== 'all'}
-                  >
-                    <option value="all">Все помещения</option>
-                    {filters?.rooms.map((room) => (
-                      <option value={room.room} key={room.room}>
-                        {getRoomLabel(room)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Класс</span>
-                  <select
-                    value={selectedConsumerClass}
-                    onChange={(event) => {
-                      setSelectedConsumerClass(event.target.value)
-                      setSelectedDataName('all')
-                    }}
-                    disabled={!filters || selectedDataName !== 'all'}
-                  >
-                    <option value="all">Все классы</option>
-                    {filters?.consumer_classes.map((item) => (
-                      <option value={item.consumer_class} key={item.consumer_class}>
-                        {textOrFallback(item.consumer_class)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </header>
-
-            {analyticsError ? <div className="energy-alert">{analyticsError}</div> : null}
-
-            <form className="energy-panel energy-analysis-form" onSubmit={handleAnalyticsCompare}>
-              <div className="energy-analysis-periods">
-                <fieldset className="energy-analysis-period">
-                  <legend>Первый период</legend>
-                  <label className="energy-control">
-                    <span>Начало</span>
-                    <input
-                      type="date"
-                      value={analyticsPeriod1From}
-                      min={availableDates[0] ?? undefined}
-                      max={availableDates.at(-1) ?? undefined}
-                      onChange={(event) => setAnalyticsPeriod1From(event.target.value)}
-                    />
-                  </label>
-                  <label className="energy-control">
-                    <span>Конец</span>
-                    <input
-                      type="date"
-                      value={analyticsPeriod1To}
-                      min={availableDates[0] ?? undefined}
-                      max={availableDates.at(-1) ?? undefined}
-                      onChange={(event) => setAnalyticsPeriod1To(event.target.value)}
-                    />
-                  </label>
-                </fieldset>
-
-                <fieldset className="energy-analysis-period">
-                  <legend>Второй период</legend>
-                  <label className="energy-control">
-                    <span>Начало</span>
-                    <input
-                      type="date"
-                      value={analyticsPeriod2From}
-                      min={availableDates[0] ?? undefined}
-                      max={availableDates.at(-1) ?? undefined}
-                      onChange={(event) => setAnalyticsPeriod2From(event.target.value)}
-                    />
-                  </label>
-                  <label className="energy-control">
-                    <span>Конец</span>
-                    <input
-                      type="date"
-                      value={analyticsPeriod2To}
-                      min={availableDates[0] ?? undefined}
-                      max={availableDates.at(-1) ?? undefined}
-                      onChange={(event) => setAnalyticsPeriod2To(event.target.value)}
-                    />
-                  </label>
-                </fieldset>
-              </div>
-
-              <div className="energy-analysis-actions">
-                <label className="energy-control energy-control--wide">
-                  <span>Альтернативная гипотеза</span>
-                  <select
-                    value={analyticsAlternative}
-                    onChange={(event) => setAnalyticsAlternative(event.target.value)}
-                  >
-                    {ANALYTICS_ALTERNATIVE_OPTIONS.map((option) => (
-                      <option value={option.value} key={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="energy-control">
-                  <span>Уровень значимости</span>
-                  <select value={analyticsAlpha} onChange={(event) => setAnalyticsAlpha(event.target.value)}>
-                    <option value="0.10">0.10</option>
-                    <option value="0.05">0.05</option>
-                    <option value="0.01">0.01</option>
-                  </select>
-                </label>
-
-                <button className="energy-ghost-button" type="submit" disabled={analyticsLoading || !filters}>
-                  {analyticsLoading ? 'Считаем...' : 'Сравнить'}
-                </button>
-              </div>
-            </form>
-
-            {analyticsResult ? (
-              <section className="energy-analysis-result">
-                <section className="energy-kpi-grid">
-                  <article className={analyticsResult.reject_null ? 'energy-kpi-card accent-danger' : 'energy-kpi-card accent-primary'}>
-                    <div className="energy-kpi-card__label">z статистическое</div>
-                    <div className="energy-kpi-card__value">
-                      {formatNumber(analyticsResult.z_statistic, 3)}
-                    </div>
-                    <div className="energy-kpi-card__meta">разность средних / стандартная ошибка</div>
-                  </article>
-
-                  <article className="energy-kpi-card">
-                    <div className="energy-kpi-card__label">z критическое</div>
-                    <div className="energy-kpi-card__value">
-                      {formatNumber(analyticsResult.z_critical, 3)}
-                    </div>
-                    <div className="energy-kpi-card__meta">
-                      таблица: CDF {formatNumber(analyticsResult.table_lookup?.matched_cdf, 5)}
-                    </div>
-                  </article>
-
-                  <article className="energy-kpi-card accent-warning">
-                    <div className="energy-kpi-card__label">Уровень значимости</div>
-                    <div className="energy-kpi-card__value">
-                      {formatNumber(analyticsResult.alpha, 2)}
-                    </div>
-                    <div className="energy-kpi-card__meta">{getAnalyticsTestLabel(analyticsResult.alternative)}</div>
-                  </article>
-
-                  <article className={analyticsResult.reject_null ? 'energy-kpi-card accent-danger' : 'energy-kpi-card accent-primary'}>
-                    <div className="energy-kpi-card__label">Решение</div>
-                    <div className="energy-kpi-card__value energy-analysis-decision">
-                      {analyticsResult.reject_null ? 'Отвергаем H0' : 'Не отвергаем H0'}
-                    </div>
-                    <div className="energy-kpi-card__meta">
-                      {analyticsResult.alternative_hypothesis ?? analyticsResult.hypothesis}
-                    </div>
-                  </article>
-                </section>
-
-                <section className="energy-content-grid energy-content-grid--secondary">
-                  {(analyticsResult.periods ?? []).map((periodStats, index) => (
-                    <article className="energy-panel" key={periodStats.key}>
-                      <div className="energy-panel__head compact">
-                        <div>
-                          <h2>{index === 0 ? 'Первый период' : 'Второй период'}</h2>
-                          <p>{formatDateLabel(periodStats.date_from)} - {formatDateLabel(periodStats.date_to)}</p>
-                        </div>
-                      </div>
-
-                      <div className="energy-summary-list">
-                        <div className="energy-summary-item">
-                          <span className="energy-summary-item__label">Средняя мощность</span>
-                          <strong className="energy-summary-item__value">{formatNumber(periodStats.mean_kw, 2)} кВт</strong>
-                          <span className="energy-summary-item__note">часовые агрегаты выбранной выборки</span>
-                        </div>
-                        <div className="energy-summary-item">
-                          <span className="energy-summary-item__label">Энергия за период</span>
-                          <strong className="energy-summary-item__value">{formatNumber(periodStats.total_energy_kwh, 0)} кВт·ч</strong>
-                          <span className="energy-summary-item__note">сумма часовых значений</span>
-                        </div>
-                        <div className="energy-summary-item">
-                          <span className="energy-summary-item__label">Наблюдения</span>
-                          <strong className="energy-summary-item__value">{formatNumber(periodStats.observations, 0)}</strong>
-                          <span className="energy-summary-item__note">исходных точек: {formatNumber(periodStats.source_points, 0)}</span>
-                        </div>
-                        <div className="energy-summary-item">
-                          <span className="energy-summary-item__label">Стандартное отклонение</span>
-                          <strong className="energy-summary-item__value">{formatNumber(periodStats.stddev_kw, 2)} кВт</strong>
-                          <span className="energy-summary-item__note">
-                            фактически: {formatDateTime(periodStats.actual_from)} - {formatDateTime(periodStats.actual_to)}
-                          </span>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </section>
-
-                <article className="energy-panel energy-analysis-conclusion">
-                  <div className="energy-panel__head compact">
-                    <div>
-                      <h2>Вывод</h2>
-                      <p>{analyticsResult.conclusion}</p>
-                    </div>
-                  </div>
-                  <div className="energy-summary-list">
-                    <div className="energy-summary-item">
-                      <span className="energy-summary-item__label">Разность средних</span>
-                      <strong className="energy-summary-item__value">
-                        {formatNumber(analyticsResult.difference_mean_kw, 3)} кВт
-                      </strong>
-                    </div>
-                    <div className="energy-summary-item">
-                      <span className="energy-summary-item__label">Правило решения</span>
-                      <strong className="energy-summary-item__value">
-                        {analyticsResult.decision_rule ?? 'abs(z_statistic) > z_critical'}
-                      </strong>
-                    </div>
-                  </div>
-                </article>
-              </section>
-            ) : (
-              <section className="energy-panel energy-analysis-placeholder">
-                <div className="energy-panel__head compact">
-                  <div>
-                    <h2>Выберите два периода</h2>
-                    <p>После сравнения здесь появятся z-статистика, критическое значение и решение по выбранной гипотезе.</p>
-                  </div>
-                </div>
-              </section>
-            )}
-          </section>
-
-          <section className={activeView === 'links' ? 'energy-view active' : 'energy-view'}>
-            <header className="energy-topbar">
-              <div>
-                <h1>Связи счетчика</h1>
-                <p>Автоматы, помещения и потребители из справочников базы данных.</p>
-              </div>
-
-              <div className="energy-toolbar">
-                <label className="energy-control energy-control--wide">
-                  <span>Счетчик</span>
-                  <select
-                    value={selectedDataName}
-                    onChange={(event) => resetDependentFilters(event.target.value)}
-                    disabled={!filters}
-                  >
-                    <option value="all">Выберите счетчик</option>
-                    {filters?.devices.map((device) => (
-                      <option value={device.data_name} key={device.data_name}>
-                        {getDeviceLabel(device)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </header>
-
-            {selectedDataName === 'all' ? (
-              <section className="energy-panel">
-                <div className="energy-panel__head compact">
-                  <div>
-                    <h2>Выберите счетчик</h2>
-                    <p>После выбора появятся реальные потребители и автоматы из базы.</p>
-                  </div>
-                </div>
-              </section>
-            ) : (
-              <section className="energy-content-grid energy-content-grid--secondary">
-                <article className="energy-panel">
-                  <div className="energy-panel__head compact">
-                    <div>
-                      <h2>Потребители</h2>
-                      <p>{deviceDetail?.consumers?.length ?? 0} записей</p>
-                    </div>
-                  </div>
-
-                  <div className="energy-table">
-                    {(deviceDetail?.consumers ?? []).map((consumer, index) => (
-                      <div className="energy-table__row" key={`${consumer.power_consumer ?? consumer.consumer_class}-${index}`}>
-                        <span>{textOrFallback(consumer.power_consumer)}</span>
-                        <strong>{textOrFallback(consumer.consumer_class)}</strong>
-                        <em>{textOrFallback(consumer.room)}</em>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-
-                <article className="energy-panel">
-                  <div className="energy-panel__head compact">
-                    <div>
-                      <h2>Автоматы и помещения</h2>
-                      <p>{deviceDetail?.breakers?.length ?? 0} записей</p>
-                    </div>
-                  </div>
-
-                  <div className="energy-table">
-                    {(deviceDetail?.breakers ?? []).map((breaker, index) => (
-                      <div className="energy-table__row" key={`${breaker.breaker ?? breaker.room}-${index}`}>
-                        <span>{textOrFallback(breaker.breaker)}</span>
-                        <strong>{textOrFallback(breaker.room)}</strong>
-                        <em>{textOrFallback([breaker.floor, breaker.building].filter(Boolean).join(' · '))}</em>
-                      </div>
-                    ))}
-                  </div>
-                </article>
-              </section>
-            )}
-          </section>
+        <section className="energy-main" aria-busy={loading}>
+          {error ? <div className="energy-alert" role="alert">{error}</div> : null}
+          <Outlet context={pageContext} />
         </section>
       </div>
     </main>

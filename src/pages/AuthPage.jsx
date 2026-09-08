@@ -1,11 +1,17 @@
 import { useEffect, useState } from 'react'
+import { Navigate, Outlet, useLocation, useNavigate } from 'react-router'
 import { login, register } from '../features/auth/api/authApi.js'
 import { apiRequest, refreshAccessToken } from '../features/auth/api/authClient.js'
-import DashboardPage from './DashboardPage.jsx'
 import LoginForm from './LoginForm.jsx'
 import RegisterForm from './RegisterForm.jsx'
-import { clearAccessToken, setAccessToken } from '../features/auth/model/authStore.js'
+import {
+  clearAccessToken,
+  setAccessToken,
+  subscribeAccessToken,
+} from '../features/auth/model/authStore.js'
 import { logout } from '../features/auth/api/authApi.js'
+import { DASHBOARD_ROUTES, ROUTES } from '../app/routes.js'
+import ThemeToggle from '../shared/theme/ThemeToggle.jsx'
 import '../auth.css'
 
 const initialLogin = {
@@ -36,9 +42,12 @@ function getRegisterErrorMessage(response, data) {
 }
 
 function AuthPage() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const searchParams = new URLSearchParams(location.search)
   const showDashboardPreview =
-    new URLSearchParams(window.location.search).get('dashboard') === '1'
-  const [mode, setMode] = useState('login')
+    searchParams.get('dashboard') === '1' || searchParams.get('preview') === '1'
+  const [mode, setMode] = useState(location.pathname === ROUTES.register ? 'register' : 'login')
   const [loginForm, setLoginForm] = useState(initialLogin)
   const [registerForm, setRegisterForm] = useState(initialRegister)
   const [loginPasswordVisible, setLoginPasswordVisible] = useState(false)
@@ -57,6 +66,7 @@ function AuthPage() {
     } finally {
       clearAccessToken()
       setCurrentUser(null)
+      navigate(ROUTES.login, { replace: true })
     }
   }
 
@@ -96,6 +106,40 @@ function AuthPage() {
       active = false
     }
   }, [])
+
+  useEffect(
+    () => subscribeAccessToken((token) => {
+      if (!token) {
+        setCurrentUser(null)
+      }
+    }),
+    [],
+  )
+
+  useEffect(() => {
+    if (location.pathname === ROUTES.login) setMode('login')
+    if (location.pathname === ROUTES.register) setMode('register')
+  }, [location.pathname])
+
+  useEffect(() => {
+    if (busy) return
+
+    const isAuthRoute = location.pathname === ROUTES.login || location.pathname === ROUTES.register
+    const isDashboardRoute = Boolean(DASHBOARD_ROUTES[location.pathname])
+
+    if (showDashboardPreview) {
+      if (location.pathname !== ROUTES.root && !isDashboardRoute) {
+        navigate(`${ROUTES.dashboard}?preview=1`, { replace: true })
+      }
+      return
+    }
+
+    if (currentUser && !isDashboardRoute) {
+      navigate(ROUTES.dashboard, { replace: true })
+    } else if (!currentUser && !isAuthRoute) {
+      navigate(ROUTES.login, { replace: true })
+    }
+  }, [busy, currentUser, location.pathname, navigate, showDashboardPreview])
 
   function updateLoginField(field, value) {
     setLoginForm((current) => ({ ...current, [field]: value }))
@@ -137,6 +181,7 @@ function AuthPage() {
       setAccessToken(data.access)
       await loadCurrentUser('Вы вошли в систему')
       setLoginForm(initialLogin)
+      navigate(ROUTES.dashboard, { replace: true })
     } catch (requestError) {
       clearAccessToken()
       setCurrentUser(null)
@@ -190,6 +235,7 @@ function AuthPage() {
       setAccessToken(loginData.access)
       await loadCurrentUser('Аккаунт создан')
       setRegisterForm(initialRegister)
+      navigate(ROUTES.dashboard, { replace: true })
     } catch (requestError) {
       clearAccessToken()
       setCurrentUser(null)
@@ -204,27 +250,33 @@ function AuthPage() {
     setMode(nextMode)
     setError('')
     setStatus('Войдите, чтобы продолжить')
+    navigate(nextMode === 'register' ? ROUTES.register : ROUTES.login)
   }
 
   const isAuthenticated = currentUser !== null
 
-  if (showDashboardPreview) {
+  if (showDashboardPreview && !DASHBOARD_ROUTES[location.pathname]) {
+    return <Navigate to={`${ROUTES.dashboard}?preview=1`} replace />
+  }
+
+  if (isAuthenticated && !DASHBOARD_ROUTES[location.pathname]) {
+    return <Navigate to={ROUTES.dashboard} replace />
+  }
+
+  if ((showDashboardPreview || isAuthenticated) && DASHBOARD_ROUTES[location.pathname]) {
     return (
-      <DashboardPage
-        currentUser={{
-          first_name: 'Demo',
-          last_name: 'User',
-          email: 'demo@example.com',
-        }}
-        onLogout={() => {
-          window.location.search = ''
+      <Outlet
+        context={{
+          currentUser: showDashboardPreview
+            ? { first_name: 'Demo', last_name: 'User', email: 'demo@example.com' }
+            : currentUser,
+          onLogout: showDashboardPreview
+            ? () => navigate(ROUTES.login, { replace: true })
+            : handleLogout,
+          preview: showDashboardPreview,
         }}
       />
     )
-  }
-
-  if (isAuthenticated) {
-    return <DashboardPage currentUser={currentUser} onLogout={handleLogout} />
   }
 
   return (
@@ -233,6 +285,7 @@ function AuthPage() {
       <div className="auth-background auth-background-right" aria-hidden="true" />
 
       <section className="auth-card">
+        <div className="auth-theme-toggle"><ThemeToggle compact /></div>
         <>
           <header className="auth-header">
             <h1>{mode === 'login' ? 'Вход в систему' : 'Регистрация'}</h1>
@@ -300,9 +353,9 @@ function AuthPage() {
           )}
         </>
 
-        <footer className="auth-footer">
+        <footer className="auth-footer" aria-live="polite" aria-busy={busy}>
           <p>{status}</p>
-          {error ? <p className="auth-error">{error}</p> : null}
+          {error ? <p className="auth-error" role="alert">{error}</p> : null}
         </footer>
       </section>
     </main>
